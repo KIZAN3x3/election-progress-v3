@@ -32,15 +32,21 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
   <div class="login-error" id="loginError"></div>
 </div>
 <script>
-const APP_PASSWORD = '123123';
+const ADMIN_PASSWORD = '123123';
+const VIEWER_PASSWORD = '123';
 function login(){
   const pw = document.getElementById('pw').value;
-  if(pw !== APP_PASSWORD){
-    document.getElementById('loginError').textContent = 'パスワードが違います';
+  if(pw === ADMIN_PASSWORD){
+    sessionStorage.setItem('v3_auth', '1');
+    location.href = 'list.html';
     return;
   }
-  sessionStorage.setItem('v3_auth', '1');
-  location.href = 'list.html';
+  if(pw === VIEWER_PASSWORD){
+    sessionStorage.setItem('v3_auth', '2');
+    location.href = 'list.html';
+    return;
+  }
+  document.getElementById('loginError').textContent = 'パスワードが違います';
 }
 </script>
 </body>

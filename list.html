@@ -34,7 +34,7 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
 </style>
 </head>
 <body>
-<div class="app-header"><h1>🗳 選挙準備管理 v3</h1><a class="header-link" href="admin.html">+ 候補者を登録</a></div>
+<div class="app-header"><h1>🗳 選挙準備管理 v3</h1><a class="header-link" id="registerLink" href="admin.html" style="display:none">+ 候補者を登録</a></div>
 <div class="content">
   <div class="filter-bar">
     <label>都道府県で絞り込み</label>
@@ -49,8 +49,13 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
 <script src="status-map.js"></script>
 <script src="prefectures.js"></script>
 <script>
-if(sessionStorage.getItem('v3_auth') !== '1'){
+const v3Auth = sessionStorage.getItem('v3_auth');
+if(v3Auth !== '1' && v3Auth !== '2'){
   location.href = 'index.html';
+}
+const isAdmin = v3Auth === '1';
+if(isAdmin){
+  document.getElementById('registerLink').style.display = '';
 }
 
 async function sbFetch(path, options = {}){
@@ -109,7 +114,7 @@ function renderList(prefecture){
         <div class="rate-bar"><div class="rate-bar-fill" style="width:${rate}%"></div></div>
         <div class="rate-num">${rate}%</div>
       </div>
-      <button class="delete-btn" onclick="event.stopPropagation();deleteCandidate('${c.id}')">削除</button>
+      ${isAdmin ? `<button class="delete-btn" onclick="event.stopPropagation();deleteCandidate('${c.id}')">削除</button>` : ''}
     </div>`;
   }).join('');
 }
