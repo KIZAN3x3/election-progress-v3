@@ -26,6 +26,15 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
 .form-message{font-size:13px;margin-top:14px;text-align:center;min-height:16px;}
 .form-message.error{color:var(--danger);}
 .form-message.success{color:var(--done);}
+.divider{border:none;border-top:1px solid var(--border);margin:28px 0;}
+.bulk-desc{font-size:12px;color:var(--text3);margin-bottom:12px;line-height:1.6;}
+.bulk-textarea{width:100%;min-height:180px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);padding:10px 12px;font-size:13px;font-family:inherit;outline:none;resize:vertical;margin-bottom:16px;}
+.bulk-textarea:focus{border-color:var(--accent);}
+.bulk-result{font-size:13px;margin-top:14px;line-height:1.7;}
+.bulk-result .result-line{margin-bottom:4px;}
+.bulk-result .result-line.success{color:var(--done);}
+.bulk-result .result-line.error{color:var(--danger);}
+.bulk-result .code-list{font-size:12px;color:var(--text3);background:var(--surface2);border-radius:var(--radius-sm);padding:8px 10px;margin-top:4px;word-break:break-all;}
 </style>
 </head>
 <body>
@@ -59,6 +68,14 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
       <button class="btn" id="submitBtn" onclick="submitCandidate()">登録</button>
       <div class="form-message" id="formMessage"></div>
     </form>
+
+    <hr class="divider">
+
+    <h2>候補者を一括登録</h2>
+    <div class="bulk-desc">Excelから候補者ID・候補者名・選挙名・都道府県の4列をコピーして、下の欄に貼り付けてください（タブ区切り）</div>
+    <textarea class="bulk-textarea" id="bulkText" placeholder="test-001&#9;テスト太郎&#9;テスト選挙&#9;東京都"></textarea>
+    <button class="btn" id="bulkSubmitBtn" onclick="submitBulk()">一括登録</button>
+    <div class="bulk-result" id="bulkResult"></div>
   </div>
 </div>
 <script src="config.js"></script>
@@ -148,6 +165,106 @@ async function submitCandidate(){
     showMessage('登録に失敗しました', 'error');
   } finally {
     submitBtn.disabled = false;
+  }
+}
+
+const PREFECTURE_SET = new Set(PREFECTURES);
+
+function escapeHtml(str){
+  return String(str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
+}
+
+function renderBulkResult({ insertedCount, formatErrorCodes, duplicateCodes }){
+  const el = document.getElementById('bulkResult');
+  let html = `<div class="result-line success">${insertedCount}件登録しました</div>`;
+  html += `<div class="result-line${formatErrorCodes.length ? ' error' : ''}">${formatErrorCodes.length}件は形式エラーでスキップ</div>`;
+  if(formatErrorCodes.length){
+    html += `<div class="code-list">${formatErrorCodes.map(escapeHtml).join(', ')}</div>`;
+  }
+  html += `<div class="result-line${duplicateCodes.length ? ' error' : ''}">${duplicateCodes.length}件は既存IDと重複のためスキップ</div>`;
+  if(duplicateCodes.length){
+    html += `<div class="code-list">${duplicateCodes.map(escapeHtml).join(', ')}</div>`;
+  }
+  el.innerHTML = html;
+}
+
+async function submitBulk(){
+  const textarea = document.getElementById('bulkText');
+  const bulkSubmitBtn = document.getElementById('bulkSubmitBtn');
+  const resultEl = document.getElementById('bulkResult');
+
+  const lines = textarea.value.split(/\r\n|\r|\n/).filter(line => line.trim() !== '');
+
+  const formatErrorCodes = [];
+  const duplicateCodes = [];
+  const candidateRows = [];
+  const seenCodes = new Set();
+
+  lines.forEach((line, i) => {
+    const cols = line.split('\t');
+    const code = (cols[0] || '').trim();
+    const name = (cols[1] || '').trim();
+    const election = (cols[2] || '').trim();
+    const prefecture = (cols[3] || '').trim();
+
+    const label = code || `(${i + 1}行目: ID未入力)`;
+
+    if(!code || !CODE_PATTERN.test(code) || !name || !PREFECTURE_SET.has(prefecture)){
+      formatErrorCodes.push(label);
+      return;
+    }
+
+    if(seenCodes.has(code)){
+      duplicateCodes.push(code);
+      return;
+    }
+    seenCodes.add(code);
+    candidateRows.push({ candidate_code: code, name, election_name: election, prefecture });
+  });
+
+  if(candidateRows.length === 0){
+    renderBulkResult({ insertedCount: 0, formatErrorCodes, duplicateCodes });
+    return;
+  }
+
+  bulkSubmitBtn.disabled = true;
+  resultEl.innerHTML = '';
+
+  try {
+    const codesParam = candidateRows.map(r => r.candidate_code).join(',');
+    const checkRes = await sbFetch(`v3_candidates?select=candidate_code&candidate_code=in.(${codesParam})`);
+    const existing = await checkRes.json();
+    const existingCodes = new Set((existing || []).map(c => c.candidate_code));
+
+    const rowsToInsert = [];
+    candidateRows.forEach(row => {
+      if(existingCodes.has(row.candidate_code)){
+        duplicateCodes.push(row.candidate_code);
+      } else {
+        rowsToInsert.push(row);
+      }
+    });
+
+    let insertedCount = 0;
+    if(rowsToInsert.length > 0){
+      const insertRes = await sbFetch('v3_candidates', {
+        method: 'POST',
+        headers: { 'Prefer': 'return=minimal' },
+        body: JSON.stringify(rowsToInsert)
+      });
+      if(insertRes.ok){
+        insertedCount = rowsToInsert.length;
+        textarea.value = '';
+      } else {
+        formatErrorCodes.push(...rowsToInsert.map(r => r.candidate_code));
+      }
+    }
+
+    renderBulkResult({ insertedCount, formatErrorCodes, duplicateCodes });
+  } catch (e) {
+    resultEl.innerHTML = '<div class="result-line error">一括登録に失敗しました</div>';
+  } finally {
+    bulkSubmitBtn.disabled = false;
   }
 }
 </script>
