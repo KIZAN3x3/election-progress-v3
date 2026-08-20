@@ -13,6 +13,10 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
 .header-link{margin-left:auto;font-size:13px;font-weight:700;color:white;background:var(--accent);border-radius:var(--radius-sm);padding:8px 14px;text-decoration:none;transition:all .15s;}
 .header-link:hover{background:var(--accent2);}
 .content{padding:20px;max-width:900px;margin:0 auto;}
+.filter-bar{display:flex;align-items:center;gap:10px;margin-bottom:16px;}
+.filter-bar label{font-size:13px;color:var(--text2);font-weight:600;white-space:nowrap;}
+.filter-bar select{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);padding:8px 12px;font-size:13px;font-family:inherit;outline:none;}
+.filter-bar select:focus{border-color:var(--accent);}
 .hint{color:var(--text3);font-size:13px;margin-bottom:16px;}
 .candidate-list{display:flex;flex-direction:column;gap:10px;}
 .candidate-card{background:var(--surface);border-radius:var(--radius-sm);padding:16px 18px;display:flex;align-items:center;gap:16px;cursor:pointer;border:1px solid transparent;transition:all .15s;}
@@ -30,11 +34,18 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
 <body>
 <div class="app-header"><h1>🗳 選挙準備管理 v3</h1><a class="header-link" href="admin.html">+ 候補者を登録</a></div>
 <div class="content">
+  <div class="filter-bar">
+    <label>都道府県で絞り込み</label>
+    <select id="prefectureFilter">
+      <option value="">すべて</option>
+    </select>
+  </div>
   <div class="hint">候補者名をクリックすると詳細を確認できます</div>
   <div class="candidate-list" id="candidateList"><div class="loading">読み込み中...</div></div>
 </div>
 <script src="config.js"></script>
 <script src="status-map.js"></script>
+<script src="prefectures.js"></script>
 <script>
 if(sessionStorage.getItem('v3_auth') !== '1'){
   location.href = 'index.html';
@@ -47,27 +58,34 @@ async function sbFetch(path){
   return res.json();
 }
 
-async function render(){
-  const el = document.getElementById('candidateList');
-  const [candidates, progress] = await Promise.all([
-    sbFetch('v3_candidates?select=id,name,election_name&order=name.asc'),
-    sbFetch('v3_progress?select=candidate_id,status')
-  ]);
+let allCandidates = [];
+let statsByCandidate = {};
 
-  if(!Array.isArray(candidates) || candidates.length === 0){
+const prefectureFilter = document.getElementById('prefectureFilter');
+PREFECTURES.forEach(pref => {
+  const opt = document.createElement('option');
+  opt.value = pref;
+  opt.textContent = pref;
+  prefectureFilter.appendChild(opt);
+});
+prefectureFilter.addEventListener('change', () => renderList(prefectureFilter.value));
+
+function renderList(prefecture){
+  const el = document.getElementById('candidateList');
+
+  if(allCandidates.length === 0){
     el.innerHTML = '<div class="empty">候補者データがありません</div>';
     return;
   }
 
-  const statsByCandidate = {};
-  (progress || []).forEach(p => {
-    if(!statsByCandidate[p.candidate_id]) statsByCandidate[p.candidate_id] = { total: 0, done: 0 };
-    const stats = statsByCandidate[p.candidate_id];
-    stats.total++;
-    if(mapStatusStage(p.status) === '納品完了') stats.done++;
-  });
+  const filtered = prefecture ? allCandidates.filter(c => c.prefecture === prefecture) : allCandidates;
 
-  el.innerHTML = candidates.map(c => {
+  if(filtered.length === 0){
+    el.innerHTML = '<div class="empty">該当する候補者がいません</div>';
+    return;
+  }
+
+  el.innerHTML = filtered.map(c => {
     const stats = statsByCandidate[c.id] || { total: 0, done: 0 };
     const rate = stats.total > 0 ? Math.round((stats.done / stats.total) * 100) : 0;
     return `<div class="candidate-card" onclick="location.href='detail.html?id=${c.id}'">
@@ -81,6 +99,25 @@ async function render(){
       </div>
     </div>`;
   }).join('');
+}
+
+async function render(){
+  const [candidates, progress] = await Promise.all([
+    sbFetch('v3_candidates?select=id,name,election_name,prefecture&order=name.asc'),
+    sbFetch('v3_progress?select=candidate_id,status')
+  ]);
+
+  allCandidates = Array.isArray(candidates) ? candidates : [];
+
+  statsByCandidate = {};
+  (progress || []).forEach(p => {
+    if(!statsByCandidate[p.candidate_id]) statsByCandidate[p.candidate_id] = { total: 0, done: 0 };
+    const stats = statsByCandidate[p.candidate_id];
+    stats.total++;
+    if(mapStatusStage(p.status) === '納品完了') stats.done++;
+  });
+
+  renderList(prefectureFilter.value);
 }
 
 function escapeHtml(str){
