@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>候補者一覧 - 選挙準備管理 v3</title>
+<style>
+:root{--bg:#ffffff;--accent:#f77f00;--accent2:#e05c00;--text:#1a1a1a;--text2:#5c5650;--text3:#8c8478;--surface:#f5f5f5;--surface2:#ececec;--border:#ddd9d0;--done:#2ecc71;--radius:12px;--radius-sm:8px;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sans JP',sans-serif;min-height:100vh;}
+.app-header{padding:16px 20px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border);}
+.app-header h1{font-size:16px;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+.content{padding:20px;max-width:900px;margin:0 auto;}
+.hint{color:var(--text3);font-size:13px;margin-bottom:16px;}
+.candidate-list{display:flex;flex-direction:column;gap:10px;}
+.candidate-card{background:var(--surface);border-radius:var(--radius-sm);padding:16px 18px;display:flex;align-items:center;gap:16px;cursor:pointer;border:1px solid transparent;transition:all .15s;}
+.candidate-card:hover{border-color:var(--accent);}
+.candidate-info{flex:1;min-width:0;}
+.candidate-name{font-size:15px;font-weight:700;margin-bottom:3px;}
+.candidate-election{font-size:12px;color:var(--text3);}
+.candidate-rate{display:flex;align-items:center;gap:10px;width:200px;flex-shrink:0;}
+.rate-bar{flex:1;height:8px;background:var(--surface2);border-radius:4px;overflow:hidden;}
+.rate-bar-fill{height:100%;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:4px;}
+.rate-num{font-size:14px;font-weight:700;width:44px;text-align:right;flex-shrink:0;}
+.empty,.loading{color:var(--text3);font-size:13px;padding:40px 0;text-align:center;}
+</style>
+</head>
+<body>
+<div class="app-header"><h1>🗳 選挙準備管理 v3</h1></div>
+<div class="content">
+  <div class="hint">候補者名をクリックすると詳細を確認できます</div>
+  <div class="candidate-list" id="candidateList"><div class="loading">読み込み中...</div></div>
+</div>
+<script src="config.js"></script>
+<script src="status-map.js"></script>
+<script>
+if(sessionStorage.getItem('v3_auth') !== '1'){
+  location.href = 'index.html';
+}
+
+async function sbFetch(path){
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
+  });
+  return res.json();
+}
+
+async function render(){
+  const el = document.getElementById('candidateList');
+  const [candidates, progress] = await Promise.all([
+    sbFetch('v3_candidates?select=id,name,election_name&order=name.asc'),
+    sbFetch('v3_progress?select=candidate_id,status')
+  ]);
+
+  if(!Array.isArray(candidates) || candidates.length === 0){
+    el.innerHTML = '<div class="empty">候補者データがありません</div>';
+    return;
+  }
+
+  const statsByCandidate = {};
+  (progress || []).forEach(p => {
+    if(!statsByCandidate[p.candidate_id]) statsByCandidate[p.candidate_id] = { total: 0, done: 0 };
+    const stats = statsByCandidate[p.candidate_id];
+    stats.total++;
+    if(mapStatusStage(p.status) === '納品完了') stats.done++;
+  });
+
+  el.innerHTML = candidates.map(c => {
+    const stats = statsByCandidate[c.id] || { total: 0, done: 0 };
+    const rate = stats.total > 0 ? Math.round((stats.done / stats.total) * 100) : 0;
+    return `<div class="candidate-card" onclick="location.href='detail.html?id=${c.id}'">
+      <div class="candidate-info">
+        <div class="candidate-name">${escapeHtml(c.name)}</div>
+        <div class="candidate-election">${escapeHtml(c.election_name || '')}</div>
+      </div>
+      <div class="candidate-rate">
+        <div class="rate-bar"><div class="rate-bar-fill" style="width:${rate}%"></div></div>
+        <div class="rate-num">${rate}%</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function escapeHtml(str){
+  return String(str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
+}
+
+render();
+</script>
+</body>
+</html>
