@@ -38,7 +38,8 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
 <script src="config.js"></script>
 <script src="status-map.js"></script>
 <script>
-if(sessionStorage.getItem('v3_auth') !== '1'){
+const v3Auth = sessionStorage.getItem('v3_auth');
+if(v3Auth !== '1' && v3Auth !== '2'){
   location.href = 'index.html';
 }
 
