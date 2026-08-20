@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>候補者詳細 - 選挙準備管理 v3</title>
+<style>
+:root{--bg:#ffffff;--accent:#f77f00;--accent2:#e05c00;--text:#1a1a1a;--text2:#5c5650;--text3:#8c8478;--surface:#f5f5f5;--surface2:#ececec;--border:#ddd9d0;--todo:#8c8478;--doing:#f77f00;--done:#2ecc71;--radius:12px;--radius-sm:8px;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sans JP',sans-serif;min-height:100vh;}
+.app-header{padding:16px 20px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border);}
+.app-header h1{font-size:16px;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+.back-link{margin-left:auto;font-size:13px;color:var(--text2);text-decoration:none;cursor:pointer;}
+.back-link:hover{color:var(--accent);}
+.content{padding:20px;max-width:900px;margin:0 auto;}
+.candidate-head{margin-bottom:24px;}
+.candidate-head .name{font-size:20px;font-weight:800;margin-bottom:4px;}
+.candidate-head .election{font-size:13px;color:var(--text3);}
+.period-section{margin-bottom:28px;}
+.period-title{font-size:14px;font-weight:700;color:var(--text2);margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid var(--surface2);}
+.item-list{display:flex;flex-direction:column;gap:6px;}
+.item-row{background:var(--surface);border-radius:var(--radius-sm);padding:11px 14px;display:flex;align-items:center;gap:10px;}
+.item-name{flex:1;font-size:13px;font-weight:600;}
+.required-badge{font-size:10px;color:var(--accent2);background:rgba(247,127,0,.15);border-radius:20px;padding:2px 8px;font-weight:700;flex-shrink:0;}
+.stage-badge{font-size:11px;font-weight:700;border-radius:20px;padding:4px 12px;flex-shrink:0;color:white;}
+.stage-todo{background:var(--todo);}
+.stage-doing{background:var(--doing);}
+.stage-done{background:var(--done);}
+.empty,.loading{color:var(--text3);font-size:13px;padding:40px 0;text-align:center;}
+</style>
+</head>
+<body>
+<div class="app-header">
+  <h1>🗳 選挙準備管理 v3</h1>
+  <a class="back-link" href="list.html">← 一覧に戻る</a>
+</div>
+<div class="content" id="content"><div class="loading">読み込み中...</div></div>
+<script src="config.js"></script>
+<script src="status-map.js"></script>
+<script>
+if(sessionStorage.getItem('v3_auth') !== '1'){
+  location.href = 'index.html';
+}
+
+const STAGE_CLASS = { '未着手': 'stage-todo', '着手中': 'stage-doing', '納品完了': 'stage-done' };
+const PERIOD_ORDER = ['政治活動期間', '選挙期間'];
+
+async function sbFetch(path){
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
+  });
+  return res.json();
+}
+
+function escapeHtml(str){
+  return String(str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
+}
+
+async function render(){
+  const el = document.getElementById('content');
+  const params = new URLSearchParams(location.search);
+  const candidateId = params.get('id');
+
+  if(!candidateId){
+    el.innerHTML = '<div class="empty">候補者idが指定されていません</div>';
+    return;
+  }
+
+  const [candidates, progress] = await Promise.all([
+    sbFetch(`v3_candidates?select=id,name,election_name&id=eq.${encodeURIComponent(candidateId)}`),
+    sbFetch(`v3_progress?select=item_name,period,required,status&candidate_id=eq.${encodeURIComponent(candidateId)}&order=item_name.asc`)
+  ]);
+
+  const candidate = Array.isArray(candidates) ? candidates[0] : null;
+  if(!candidate){
+    el.innerHTML = '<div class="empty">候補者が見つかりません</div>';
+    return;
+  }
+
+  const byPeriod = {};
+  (progress || []).forEach(p => {
+    if(!byPeriod[p.period]) byPeriod[p.period] = [];
+    byPeriod[p.period].push(p);
+  });
+
+  const periods = Object.keys(byPeriod).sort((a, b) => {
+    const ia = PERIOD_ORDER.indexOf(a), ib = PERIOD_ORDER.indexOf(b);
+    if(ia === -1 && ib === -1) return a.localeCompare(b, 'ja');
+    if(ia === -1) return 1;
+    if(ib === -1) return -1;
+    return ia - ib;
+  });
+
+  const sectionsHtml = periods.length === 0
+    ? '<div class="empty">進捗データがありません</div>'
+    : periods.map(period => {
+        const items = byPeriod[period];
+        const itemsHtml = items.map(item => {
+          const stage = mapStatusStage(item.status);
+          const stageClass = STAGE_CLASS[stage] || 'stage-doing';
+          return `<div class="item-row">
+            <div class="item-name">${escapeHtml(item.item_name)}</div>
+            ${item.required ? '<div class="required-badge">必須</div>' : ''}
+            <div class="stage-badge ${stageClass}">${stage}</div>
+          </div>`;
+        }).join('');
+        return `<div class="period-section">
+          <div class="period-title">${escapeHtml(period)}</div>
+          <div class="item-list">${itemsHtml}</div>
+        </div>`;
+      }).join('');
+
+  el.innerHTML = `
+    <div class="candidate-head">
+      <div class="name">${escapeHtml(candidate.name)}</div>
+      <div class="election">${escapeHtml(candidate.election_name || '')}</div>
+    </div>
+    ${sectionsHtml}
+  `;
+}
+
+render();
+</script>
+</body>
+</html>
