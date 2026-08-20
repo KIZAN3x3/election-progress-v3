@@ -68,7 +68,7 @@ async function render(){
 
   const [candidates, progress] = await Promise.all([
     sbFetch(`v3_candidates?select=id,name,election_name&id=eq.${encodeURIComponent(candidateId)}`),
-    sbFetch(`v3_progress?select=item_name,period,required,status&candidate_id=eq.${encodeURIComponent(candidateId)}&order=item_name.asc`)
+    sbFetch(`v3_progress?select=item_name,period,required,status&candidate_id=eq.${encodeURIComponent(candidateId)}&order=sort_order.asc.nullslast`)
   ]);
 
   const candidate = Array.isArray(candidates) ? candidates[0] : null;
