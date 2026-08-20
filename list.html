@@ -10,6 +10,8 @@
 body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sans JP',sans-serif;min-height:100vh;}
 .app-header{padding:16px 20px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border);}
 .app-header h1{font-size:16px;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+.header-link{margin-left:auto;font-size:13px;font-weight:700;color:white;background:var(--accent);border-radius:var(--radius-sm);padding:8px 14px;text-decoration:none;transition:all .15s;}
+.header-link:hover{background:var(--accent2);}
 .content{padding:20px;max-width:900px;margin:0 auto;}
 .hint{color:var(--text3);font-size:13px;margin-bottom:16px;}
 .candidate-list{display:flex;flex-direction:column;gap:10px;}
@@ -26,7 +28,7 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
 </style>
 </head>
 <body>
-<div class="app-header"><h1>🗳 選挙準備管理 v3</h1></div>
+<div class="app-header"><h1>🗳 選挙準備管理 v3</h1><a class="header-link" href="admin.html">+ 候補者を登録</a></div>
 <div class="content">
   <div class="hint">候補者名をクリックすると詳細を確認できます</div>
   <div class="candidate-list" id="candidateList"><div class="loading">読み込み中...</div></div>
