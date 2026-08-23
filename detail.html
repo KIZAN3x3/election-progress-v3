@@ -102,7 +102,7 @@ async function render(){
           return `<div class="item-row">
             <div class="item-name">${escapeHtml(item.item_name)}</div>
             ${item.required ? '<div class="required-badge">必須</div>' : ''}
-            <div class="stage-badge ${stageClass}">${stage}</div>
+            <div class="stage-badge ${stageClass}">${escapeHtml(item.status)}</div>
           </div>`;
         }).join('');
         return `<div class="period-section">
