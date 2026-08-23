@@ -65,6 +65,11 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
           <option value="">選択してください</option>
         </select>
       </div>
+      <div class="form-group">
+        <label>GoogleスプレッドシートのURLまたはID</label>
+        <input type="text" id="sheetId" placeholder="例: https://docs.google.com/spreadsheets/d/xxxxx/edit" autocomplete="off">
+        <div class="form-hint">任意項目です。サービスアカウント（v3-sheet-reader@election-progress-v3.iam.gserviceaccount.com）に「閲覧者」共有してある候補者のみ、定期同期の対象になります</div>
+      </div>
       <button class="btn" id="submitBtn" onclick="submitCandidate()">登録</button>
       <div class="form-message" id="formMessage"></div>
     </form>
@@ -87,6 +92,14 @@ if(v3Auth !== '1' && v3Auth !== '2'){
 }
 
 const CODE_PATTERN = /^[A-Za-z0-9-]+$/;
+const SHEET_URL_PATTERN = /\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/;
+
+function extractSheetId(input){
+  const trimmed = input.trim();
+  if(!trimmed) return '';
+  const match = trimmed.match(SHEET_URL_PATTERN);
+  return match ? match[1] : trimmed;
+}
 
 const prefectureSelect = document.getElementById('prefecture');
 PREFECTURES.forEach(pref => {
@@ -119,12 +132,14 @@ async function submitCandidate(){
   const codeInput = document.getElementById('candidateCode');
   const nameInput = document.getElementById('candidateName');
   const electionInput = document.getElementById('electionName');
+  const sheetIdInput = document.getElementById('sheetId');
   const submitBtn = document.getElementById('submitBtn');
 
   const code = codeInput.value.trim();
   const name = nameInput.value.trim();
   const election = electionInput.value.trim();
   const prefecture = prefectureSelect.value;
+  const sheetId = extractSheetId(sheetIdInput.value);
 
   if(!code || !name || !election || !prefecture){
     showMessage('すべての項目を入力してください', 'error');
@@ -149,7 +164,7 @@ async function submitCandidate(){
     const insertRes = await sbFetch('v3_candidates', {
       method: 'POST',
       headers: { 'Prefer': 'return=minimal' },
-      body: JSON.stringify({ candidate_code: code, name, election_name: election, prefecture })
+      body: JSON.stringify({ candidate_code: code, name, election_name: election, prefecture, sheet_id: sheetId || null })
     });
 
     if(!insertRes.ok){
@@ -162,6 +177,7 @@ async function submitCandidate(){
     nameInput.value = '';
     electionInput.value = '';
     prefectureSelect.value = '';
+    sheetIdInput.value = '';
   } catch (e) {
     showMessage('登録に失敗しました', 'error');
   } finally {
