@@ -1,0 +1,11 @@
+{
+  "name": "election-progress-v3-sync",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync-sheets": "node scripts/sync-sheets.mjs"
+  },
+  "dependencies": {
+    "googleapis": "^176.0.0"
+  }
+}
