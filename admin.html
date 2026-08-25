@@ -68,7 +68,7 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
       <div class="form-group">
         <label>GoogleスプレッドシートのURLまたはID</label>
         <input type="text" id="sheetId" placeholder="例: https://docs.google.com/spreadsheets/d/xxxxx/edit" autocomplete="off">
-        <div class="form-hint">任意項目です。サービスアカウント（v3-sheet-reader@election-progress-v3.iam.gserviceaccount.com）に「閲覧者」共有してある候補者のみ、定期同期の対象になります</div>
+        <div class="form-hint">候補者新規作成で作られたシートのURLを貼り付けてください(進捗の自動同期に必須です)</div>
       </div>
       <button class="btn" id="submitBtn" onclick="submitCandidate()">登録</button>
       <div class="form-message" id="formMessage"></div>
