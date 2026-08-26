@@ -77,8 +77,8 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
     <hr class="divider">
 
     <h2>候補者を一括登録</h2>
-    <div class="bulk-desc">Excelから候補者ID・候補者名・選挙名・都道府県の4列をコピーして、下の欄に貼り付けてください（タブ区切り）</div>
-    <textarea class="bulk-textarea" id="bulkText" placeholder="test-001&#9;テスト太郎&#9;テスト選挙&#9;東京都"></textarea>
+    <div class="bulk-desc">Excelから候補者ID・候補者名・選挙名・都道府県・GoogleスプレッドシートのURL（任意）の5列をコピーして、下の欄に貼り付けてください（タブ区切り）</div>
+    <textarea class="bulk-textarea" id="bulkText" placeholder="test-001&#9;テスト太郎&#9;テスト選挙&#9;東京都&#9;https://docs.google.com/spreadsheets/d/xxxxx/edit"></textarea>
     <button class="btn" id="bulkSubmitBtn" onclick="submitBulk()">一括登録</button>
     <div class="bulk-result" id="bulkResult"></div>
   </div>
@@ -223,6 +223,7 @@ async function submitBulk(){
     const name = (cols[1] || '').trim();
     const election = (cols[2] || '').trim();
     const prefecture = (cols[3] || '').trim();
+    const sheetId = extractSheetId((cols[4] || '').trim());
 
     const label = code || `(${i + 1}行目: ID未入力)`;
 
@@ -236,7 +237,7 @@ async function submitBulk(){
       return;
     }
     seenCodes.add(code);
-    candidateRows.push({ candidate_code: code, name, election_name: election, prefecture });
+    candidateRows.push({ candidate_code: code, name, election_name: election, prefecture, sheet_id: sheetId || null });
   });
 
   if(candidateRows.length === 0){
