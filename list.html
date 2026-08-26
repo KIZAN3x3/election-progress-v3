@@ -30,7 +30,29 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
 .rate-num{font-size:14px;font-weight:700;width:44px;text-align:right;flex-shrink:0;}
 .delete-btn{flex-shrink:0;background:transparent;border:1px solid var(--border);color:var(--text3);border-radius:var(--radius-sm);padding:6px 10px;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s;}
 .delete-btn:hover{background:var(--danger);border-color:var(--danger);color:white;}
+.edit-btn{flex-shrink:0;background:transparent;border:1px solid var(--border);color:var(--text3);border-radius:var(--radius-sm);padding:6px 10px;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s;}
+.edit-btn:hover{background:var(--accent);border-color:var(--accent);color:white;}
 .empty,.loading{color:var(--text3);font-size:13px;padding:40px 0;text-align:center;}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);align-items:center;justify-content:center;padding:20px;z-index:100;}
+.modal-overlay.open{display:flex;}
+.modal-box{background:var(--bg);border-radius:var(--radius);padding:24px;width:100%;max-width:420px;max-height:90vh;overflow-y:auto;}
+.modal-box h2{font-size:16px;font-weight:700;margin-bottom:18px;}
+.form-group{margin-bottom:14px;}
+.form-group label{display:block;font-size:12px;color:var(--text3);margin-bottom:6px;font-weight:600;}
+.form-group input,.form-group select{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);padding:10px 12px;font-size:14px;font-family:inherit;outline:none;}
+.form-group input:focus,.form-group select:focus{border-color:var(--accent);}
+.form-group input:disabled{color:var(--text3);cursor:not-allowed;}
+.form-hint{font-size:11px;color:var(--text3);margin-top:5px;}
+.modal-actions{display:flex;gap:10px;margin-top:20px;}
+.modal-actions .btn{flex:1;padding:12px 20px;border-radius:var(--radius-sm);font-size:14px;font-weight:700;cursor:pointer;border:none;transition:all .15s;}
+.modal-actions .btn-primary{background:var(--accent);color:white;}
+.modal-actions .btn-primary:hover{background:var(--accent2);}
+.modal-actions .btn-primary:disabled{opacity:.6;cursor:not-allowed;}
+.modal-actions .btn-secondary{background:var(--surface2);color:var(--text2);}
+.modal-actions .btn-secondary:hover{background:var(--border);}
+.form-message{font-size:13px;margin-top:14px;text-align:center;min-height:16px;}
+.form-message.error{color:var(--danger);}
+.form-message.success{color:var(--done);}
 </style>
 </head>
 <body>
@@ -44,6 +66,39 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
   </div>
   <div class="hint">候補者名をクリックすると詳細を確認できます</div>
   <div class="candidate-list" id="candidateList"><div class="loading">読み込み中...</div></div>
+</div>
+<div class="modal-overlay" id="editModalOverlay">
+  <div class="modal-box">
+    <h2>候補者情報を編集</h2>
+    <div class="form-group">
+      <label>候補者ID（candidate_code）</label>
+      <input type="text" id="editCandidateCode" disabled>
+      <div class="form-hint">候補者IDは変更できません</div>
+    </div>
+    <div class="form-group">
+      <label>候補者名</label>
+      <input type="text" id="editCandidateName" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label>選挙名</label>
+      <input type="text" id="editElectionName" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label>都道府県</label>
+      <select id="editPrefecture">
+        <option value="">選択してください</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>GoogleスプレッドシートのURLまたはID</label>
+      <input type="text" id="editSheetId" placeholder="例: https://docs.google.com/spreadsheets/d/xxxxx/edit" autocomplete="off">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeEditModal()">キャンセル</button>
+      <button class="btn btn-primary" id="editSaveBtn" onclick="saveEdit()">更新</button>
+    </div>
+    <div class="form-message" id="editMessage"></div>
+  </div>
 </div>
 <script src="config.js"></script>
 <script src="status-map.js"></script>
@@ -78,6 +133,15 @@ async function sbFetchJson(path){
 let allCandidates = [];
 let statsByCandidate = {};
 
+const SHEET_URL_PATTERN = /\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/;
+
+function extractSheetId(input){
+  const trimmed = input.trim();
+  if(!trimmed) return '';
+  const match = trimmed.match(SHEET_URL_PATTERN);
+  return match ? match[1] : trimmed;
+}
+
 const prefectureFilter = document.getElementById('prefectureFilter');
 PREFECTURES.forEach(pref => {
   const opt = document.createElement('option');
@@ -86,6 +150,14 @@ PREFECTURES.forEach(pref => {
   prefectureFilter.appendChild(opt);
 });
 prefectureFilter.addEventListener('change', () => renderList(prefectureFilter.value));
+
+const editPrefectureSelect = document.getElementById('editPrefecture');
+PREFECTURES.forEach(pref => {
+  const opt = document.createElement('option');
+  opt.value = pref;
+  opt.textContent = pref;
+  editPrefectureSelect.appendChild(opt);
+});
 
 function renderList(prefecture){
   const el = document.getElementById('candidateList');
@@ -114,6 +186,7 @@ function renderList(prefecture){
         <div class="rate-bar"><div class="rate-bar-fill" style="width:${rate}%"></div></div>
         <div class="rate-num">${rate}%</div>
       </div>
+      ${isAdmin ? `<button class="edit-btn" onclick="event.stopPropagation();openEditModal('${c.id}')">編集</button>` : ''}
       ${isAdmin ? `<button class="delete-btn" onclick="event.stopPropagation();deleteCandidate('${c.id}')">削除</button>` : ''}
     </div>`;
   }).join('');
@@ -121,7 +194,7 @@ function renderList(prefecture){
 
 async function render(){
   const [candidates, progress] = await Promise.all([
-    sbFetchJson('v3_candidates?select=id,name,election_name,prefecture&order=name.asc'),
+    sbFetchJson('v3_candidates?select=id,candidate_code,name,election_name,prefecture,sheet_id&order=name.asc'),
     sbFetchJson('v3_progress?select=candidate_id,status')
   ]);
 
@@ -155,6 +228,72 @@ async function deleteCandidate(id){
   }
 
   render();
+}
+
+let editingCandidateId = null;
+
+function openEditModal(id){
+  const candidate = allCandidates.find(c => c.id === id);
+  if(!candidate) return;
+
+  editingCandidateId = id;
+  document.getElementById('editCandidateCode').value = candidate.candidate_code || '';
+  document.getElementById('editCandidateName').value = candidate.name || '';
+  document.getElementById('editElectionName').value = candidate.election_name || '';
+  editPrefectureSelect.value = candidate.prefecture || '';
+  document.getElementById('editSheetId').value = candidate.sheet_id || '';
+  document.getElementById('editMessage').textContent = '';
+  document.getElementById('editMessage').className = 'form-message';
+  document.getElementById('editModalOverlay').classList.add('open');
+}
+
+function closeEditModal(){
+  editingCandidateId = null;
+  document.getElementById('editModalOverlay').classList.remove('open');
+}
+
+function showEditMessage(text, type){
+  const el = document.getElementById('editMessage');
+  el.textContent = text;
+  el.className = 'form-message' + (type ? ' ' + type : '');
+}
+
+async function saveEdit(){
+  if(!editingCandidateId) return;
+
+  const name = document.getElementById('editCandidateName').value.trim();
+  const election = document.getElementById('editElectionName').value.trim();
+  const prefecture = editPrefectureSelect.value;
+  const sheetId = extractSheetId(document.getElementById('editSheetId').value);
+  const saveBtn = document.getElementById('editSaveBtn');
+
+  if(!name || !election || !prefecture){
+    showEditMessage('すべての項目を入力してください', 'error');
+    return;
+  }
+
+  saveBtn.disabled = true;
+  showEditMessage('', '');
+
+  try {
+    const res = await sbFetch(`v3_candidates?id=eq.${encodeURIComponent(editingCandidateId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+      body: JSON.stringify({ name, election_name: election, prefecture, sheet_id: sheetId || null })
+    });
+
+    if(!res.ok){
+      showEditMessage('更新に失敗しました', 'error');
+      return;
+    }
+
+    closeEditModal();
+    render();
+  } catch (e) {
+    showEditMessage('更新に失敗しました', 'error');
+  } finally {
+    saveBtn.disabled = false;
+  }
 }
 
 render();
