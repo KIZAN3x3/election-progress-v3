@@ -18,6 +18,7 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
 .filter-bar select{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);padding:8px 12px;font-size:13px;font-family:inherit;outline:none;}
 .filter-bar select:focus{border-color:var(--accent);}
 .hint{color:var(--text3);font-size:13px;margin-bottom:16px;}
+.sync-banner{background:#eef3f6;color:var(--text3);font-size:12px;border-radius:var(--radius-sm);padding:8px 12px;margin-bottom:16px;}
 .candidate-list{display:flex;flex-direction:column;gap:10px;}
 .candidate-card{background:var(--surface);border-radius:var(--radius-sm);padding:16px 18px;display:flex;align-items:center;gap:16px;cursor:pointer;border:1px solid transparent;transition:all .15s;}
 .candidate-card:hover{border-color:var(--accent);}
@@ -64,6 +65,7 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
       <option value="">すべて</option>
     </select>
   </div>
+  <div class="sync-banner">※ 候補者の入力内容は最大15分ごとに自動反映されます</div>
   <div class="hint">候補者名をクリックすると詳細を確認できます</div>
   <div class="candidate-list" id="candidateList"><div class="loading">読み込み中...</div></div>
 </div>
