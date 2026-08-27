@@ -97,7 +97,7 @@ async function fetchCandidatesWithSheet() {
 // フェイルセーフに「要同期」扱いにする（本読み込み側で本来のエラーが可視化される）
 async function fetchModifiedTime(driveApi, sheetId) {
   try {
-    const res = await driveApi.files.get({ fileId: sheetId, fields: "modifiedTime" });
+    const res = await driveApi.files.get({ fileId: sheetId, fields: "modifiedTime", supportsAllDrives: true });
     return res.data.modifiedTime || null;
   } catch (e) {
     console.error(`  modifiedTime取得に失敗（sheet_id: ${sheetId}）: ${e.message}`);
