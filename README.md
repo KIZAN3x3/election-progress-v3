@@ -37,6 +37,8 @@
 
 シート内の「候補者ID」欄の値がDB上の`candidate_code`と一致しない場合、その候補者はエラーとしてスキップされます（他候補者の処理は継続）。1回の実行の成功/失敗件数はGitHub Actionsのログに出力されます。
 
+`v3-sync-progress`（`supabase/functions/v3-sync-progress/index.ts`）は同期のたびに`v3_progress`を完全上書きしますが、同期前に既存の`item_name/required/status`と比較し、差分（項目の追加・削除・値の変化）があった候補者のみ`v3_candidates.last_updated_at`を現在時刻に更新します。差分が無い場合は`last_updated_at`を維持します。`list.html`の各候補者カードにこの`last_updated_at`を「最終更新: YYYY/MM/DD HH:mm」の形式で表示します。
+
 ### 必要なGitHub Secrets
 
 - `V3_SYNC_TOKEN` — `v3-sync-progress` Edge Functionの認証トークン
