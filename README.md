@@ -28,7 +28,9 @@
 候補者ごとの進捗スプレッドシートに`v3_progress`の内容を自動反映する仕組みです。
 
 - **手動反映（既存・そのまま利用可）**: 候補者側のスプレッドシートに組み込まれたApps Scriptのメニュー「広報物進捗」→「進捗をアプリへ反映」ボタンで、いつでも即時反映できます。
-- **自動反映（新規）**: `scripts/sync-sheets.mjs` が、`v3_candidates.sheet_id` が設定されている候補者のスプレッドシートをサービスアカウント（`v3-sheet-reader@election-progress-v3.iam.gserviceaccount.com`）経由で読み取り、Apps Script側と同じロジック（`findLabelValue` / `collectItems` / `buildRecords`）で`v3-sync-progress`にPOSTします。GitHub Actionsのワークフロー（`.github/workflows/sync-sheets.yml`）が15分おきに全候補者分をまとめて実行します。
+- **自動反映（新規）**: `scripts/sync-sheets.mjs` が、`v3_candidates.sheet_id` が設定されている候補者のスプレッドシートをサービスアカウント（`v3-sheet-reader@election-progress-v3.iam.gserviceaccount.com`）経由で読み取り、Apps Script側と同じロジック（`findLabelValue` / `collectItems` / `buildRecords`）で`v3-sync-progress`にPOSTします。GitHub Actionsのワークフロー（`.github/workflows/sync-sheets.yml`）が5分おきに実行します。
+
+候補者数の増加に備え、2段階の差分検知でスプレッドシートの中身のフル読み込みを最小限にしています。まずDrive API（`drive.metadata.readonly`スコープ、サービスアカウントは既に閲覧者として共有済みなので追加の認可は不要）で各候補者の`sheet_id`ごとに`modifiedTime`だけを軽量取得し、`v3_candidates.sheet_modified_at`（前回処理時点のmodifiedTime）と比較します。変化がある候補者だけ、従来通りSheets APIでの中身のフル読み込み・`v3-sync-progress`へのPOSTを行い、成功後に`sheet_modified_at`を更新します。変化が無い候補者はAPI呼び出しをスキップします。`modifiedTime`の取得自体に失敗した場合はフェイルセーフとして「要同期」扱いにする（本来のエラーはフル読み込み側で可視化される）ため、取得エラーで同期が永久にスキップされることはありません。
 
 候補者のスプレッドシートは、自動同期の対象にするには以下が必要です。
 

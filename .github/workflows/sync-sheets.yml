@@ -2,8 +2,12 @@ name: Sync candidate sheets to Supabase
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}
+
+concurrency:
+  group: sync-sheets
+  cancel-in-progress: false
 
 jobs:
   sync:
