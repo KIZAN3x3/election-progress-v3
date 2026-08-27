@@ -25,6 +25,7 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
 .candidate-info{flex:1;min-width:0;}
 .candidate-name{font-size:15px;font-weight:700;margin-bottom:3px;}
 .candidate-election{font-size:12px;color:var(--text3);}
+.candidate-updated{font-size:11px;color:var(--text3);margin-top:2px;}
 .candidate-rate{display:flex;align-items:center;gap:10px;width:200px;flex-shrink:0;}
 .rate-bar{flex:1;height:8px;background:var(--surface2);border-radius:4px;overflow:hidden;}
 .rate-bar-fill{height:100%;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:4px;}
@@ -183,6 +184,7 @@ function renderList(prefecture){
       <div class="candidate-info">
         <div class="candidate-name">${escapeHtml(c.name)}</div>
         <div class="candidate-election">${escapeHtml(c.election_name || '')}</div>
+        <div class="candidate-updated">${formatLastUpdated(c.last_updated_at)}</div>
       </div>
       <div class="candidate-rate">
         <div class="rate-bar"><div class="rate-bar-fill" style="width:${rate}%"></div></div>
@@ -196,7 +198,7 @@ function renderList(prefecture){
 
 async function render(){
   const [candidates, progress] = await Promise.all([
-    sbFetchJson('v3_candidates?select=id,candidate_code,name,election_name,prefecture,sheet_id&order=name.asc'),
+    sbFetchJson('v3_candidates?select=id,candidate_code,name,election_name,prefecture,sheet_id,last_updated_at&order=name.asc'),
     sbFetchJson('v3_progress?select=candidate_id,status')
   ]);
 
@@ -211,6 +213,14 @@ async function render(){
   });
 
   renderList(prefectureFilter.value);
+}
+
+function formatLastUpdated(isoString){
+  if(!isoString) return '最終更新: -';
+  const d = new Date(isoString);
+  const pad = n => String(n).padStart(2, '0');
+  const dateStr = `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `最終更新: ${dateStr}`;
 }
 
 function escapeHtml(str){
