@@ -58,7 +58,7 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: "no records to sync" }, 400);
   }
 
-  const results: Array<{ candidate_code: string; status: string; synced?: number; deleted?: number; error?: string }> = [];
+  const results: Array<{ candidate_code: string; status: string; synced?: number; deleted?: number; changed?: boolean; error?: string }> = [];
 
   for (const record of records) {
     const { candidate_code, period, items } = record;
