@@ -9,13 +9,31 @@ const SERVICE_ACCOUNT_KEY_JSON = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
 const INFO_SHEET_NAME = "選挙情報・SNS情報ページ";
 const LIST_SHEET_NAME = "広報物一覧・進捗確認ページ";
 const CANDIDATE_ID_LABEL = "候補者ID";
-const MODIFIED_TIME_CHECK_CONCURRENCY = 10;
+const MODIFIED_TIME_CHECK_CONCURRENCY = 5;
 
 function requireEnv(name, value) {
   if (!value) {
     throw new Error(`環境変数 ${name} が設定されていません`);
   }
   return value;
+}
+
+// 指数バックオフ付きのリトライ処理を行う共通関数
+// 503/404などGoogle API側の一時的な不調を吸収するために使用する
+async function withRetry(fn, retries = 3, initialDelayMs = 1000) {
+  let delay = initialDelayMs;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (attempt >= retries) {
+        throw e;
+      }
+      console.log(`  リトライします（${attempt + 1}/${retries}）: ${e.message}`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      delay *= 2;
+    }
+  }
 }
 
 // GASのfindLabelValueと同じロジック：シート内でラベル文字列を探し、右隣のセルの値を返す
@@ -97,7 +115,9 @@ async function fetchCandidatesWithSheet() {
 // フェイルセーフに「要同期」扱いにする（本読み込み側で本来のエラーが可視化される）
 async function fetchModifiedTime(driveApi, sheetId) {
   try {
-    const res = await driveApi.files.get({ fileId: sheetId, fields: "modifiedTime", supportsAllDrives: true });
+    const res = await withRetry(() =>
+      driveApi.files.get({ fileId: sheetId, fields: "modifiedTime", supportsAllDrives: true })
+    );
     return res.data.modifiedTime || null;
   } catch (e) {
     console.error(`  modifiedTime取得に失敗（sheet_id: ${sheetId}）: ${e.message}`);
@@ -140,10 +160,12 @@ async function updateSheetModifiedAt(candidateId, modifiedTime) {
 }
 
 async function readSheetValues(sheetsApi, spreadsheetId, sheetName) {
-  const res = await sheetsApi.spreadsheets.values.get({
-    spreadsheetId,
-    range: sheetName,
-  });
+  const res = await withRetry(() =>
+    sheetsApi.spreadsheets.values.get({
+      spreadsheetId,
+      range: sheetName,
+    })
+  );
   return res.data.values || [];
 }
 
