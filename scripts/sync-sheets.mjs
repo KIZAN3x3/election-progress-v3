@@ -190,19 +190,25 @@ async function syncOneCandidate(sheetsApi, candidate) {
 
   const records = buildRecords(sheetCandidateCode, items);
 
-  const res = await fetch(SYNC_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-    },
-    body: JSON.stringify({ token: SYNC_TOKEN, records }),
-  });
+  const bodyText = await withRetry(async () => {
+    const res = await fetch(SYNC_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+      },
+      body: JSON.stringify({ token: SYNC_TOKEN, records }),
+    });
 
-  const bodyText = await res.text();
-  if (res.status < 200 || res.status >= 300) {
-    throw new Error(`同期リクエストが失敗しました（${res.status}）: ${bodyText}`);
-  }
+    const text = await res.text();
+    // 一時的なエラー（Supabase Edge Functionの一時停止など）はリトライ対象とする
+    const isTemporaryError = /UNAVAILABLE|DEGRADED/.test(text);
+    if (res.status < 200 || res.status >= 300 || isTemporaryError) {
+      throw new Error(`同期リクエストが失敗しました（${res.status}）: ${text}`);
+    }
+
+    return text;
+  });
 
   let body;
   try {
