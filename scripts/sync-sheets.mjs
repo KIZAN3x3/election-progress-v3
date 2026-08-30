@@ -10,6 +10,7 @@ const INFO_SHEET_NAME = "選挙情報・SNS情報ページ";
 const LIST_SHEET_NAME = "広報物一覧・進捗確認ページ";
 const CANDIDATE_ID_LABEL = "候補者ID";
 const MODIFIED_TIME_CHECK_CONCURRENCY = 5;
+const SYNC_REQUEST_TIMEOUT_MS = 30000;
 
 function requireEnv(name, value) {
   if (!value) {
@@ -191,23 +192,36 @@ async function syncOneCandidate(sheetsApi, candidate) {
   const records = buildRecords(sheetCandidateCode, items);
 
   const bodyText = await withRetry(async () => {
-    const res = await fetch(SYNC_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        Authorization: `Bearer ${SUPABASE_KEY}`,
-      },
-      body: JSON.stringify({ token: SYNC_TOKEN, records }),
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), SYNC_REQUEST_TIMEOUT_MS);
 
-    const text = await res.text();
-    // 一時的なエラー（Supabase Edge Functionの一時停止など）はリトライ対象とする
-    const isTemporaryError = /UNAVAILABLE|DEGRADED/.test(text);
-    if (res.status < 200 || res.status >= 300 || isTemporaryError) {
-      throw new Error(`同期リクエストが失敗しました（${res.status}）: ${text}`);
+    try {
+      const res = await fetch(SYNC_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          Authorization: `Bearer ${SUPABASE_KEY}`,
+        },
+        body: JSON.stringify({ token: SYNC_TOKEN, records }),
+        signal: controller.signal,
+      });
+
+      const text = await res.text();
+      // 一時的なエラー（Supabase Edge Functionの一時停止など）はリトライ対象とする
+      const isTemporaryError = /UNAVAILABLE|DEGRADED/.test(text);
+      if (res.status < 200 || res.status >= 300 || isTemporaryError) {
+        throw new Error(`同期リクエストが失敗しました（${res.status}）: ${text}`);
+      }
+
+      return text;
+    } catch (e) {
+      if (e.name === "AbortError") {
+        throw new Error(`同期リクエストがタイムアウトしました（${SYNC_REQUEST_TIMEOUT_MS / 1000}秒）`);
+      }
+      throw e;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    return text;
   });
 
   let body;
