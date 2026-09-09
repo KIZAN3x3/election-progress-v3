@@ -12,12 +12,30 @@ interface SyncRecord {
   items: ProgressItem[];
 }
 
+interface CreateCandidateInput {
+  candidate_code?: string;
+  name?: string;
+  election_name?: string;
+  prefecture?: string;
+  sheet_id?: string | null;
+}
+
 interface SyncRequestBody {
   token?: string;
+  action?: "sync" | "createCandidate" | "deleteCandidate" | "updateCandidate";
+  // sync / createCandidate (single)
   candidate_code?: string;
   period?: string;
   items?: ProgressItem[];
   records?: SyncRecord[];
+  // createCandidate (single or bulk)
+  name?: string;
+  election_name?: string;
+  prefecture?: string;
+  sheet_id?: string | null;
+  candidates?: CreateCandidateInput[];
+  // deleteCandidate / updateCandidate
+  id?: string;
 }
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -26,14 +44,147 @@ const V3_SYNC_TOKEN = Deno.env.get("V3_SYNC_TOKEN");
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
 function jsonResponse(body: unknown, status: number) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...corsHeaders },
   });
 }
 
+async function handleCreateCandidate(body: SyncRequestBody) {
+  const inputs: CreateCandidateInput[] = Array.isArray(body.candidates)
+    ? body.candidates
+    : [{
+        candidate_code: body.candidate_code,
+        name: body.name,
+        election_name: body.election_name,
+        prefecture: body.prefecture,
+        sheet_id: body.sheet_id,
+      }];
+
+  const results: Array<{ candidate_code: string; status: string; error?: string; reason?: string }> = [];
+
+  for (const input of inputs) {
+    const candidateCode = input.candidate_code?.trim();
+    const name = input.name?.trim();
+    const electionName = input.election_name?.trim();
+    const prefecture = input.prefecture?.trim();
+    const sheetId = input.sheet_id || null;
+
+    if (!candidateCode || !name || !electionName || !prefecture) {
+      results.push({ candidate_code: candidateCode ?? "", status: "error", error: "必須項目が不足しています" });
+      continue;
+    }
+
+    const { data: existing, error: existingError } = await supabase
+      .from("v3_candidates")
+      .select("id")
+      .eq("candidate_code", candidateCode)
+      .maybeSingle();
+
+    if (existingError) {
+      results.push({ candidate_code: candidateCode, status: "error", error: existingError.message });
+      continue;
+    }
+
+    if (existing) {
+      results.push({
+        candidate_code: candidateCode,
+        status: "error",
+        error: "この候補者IDは既に登録されています",
+        reason: "duplicate",
+      });
+      continue;
+    }
+
+    const { error: insertError } = await supabase
+      .from("v3_candidates")
+      .insert({
+        candidate_code: candidateCode,
+        name,
+        election_name: electionName,
+        prefecture,
+        sheet_id: sheetId,
+      });
+
+    if (insertError) {
+      results.push({ candidate_code: candidateCode, status: "error", error: insertError.message });
+      continue;
+    }
+
+    results.push({ candidate_code: candidateCode, status: "ok" });
+  }
+
+  const hasError = results.some((r) => r.status === "error");
+  return jsonResponse({ results }, hasError ? 207 : 200);
+}
+
+async function handleDeleteCandidate(body: SyncRequestBody) {
+  const id = body.id;
+  if (!id) {
+    return jsonResponse({ error: "id is required" }, 400);
+  }
+
+  const { error: progressError } = await supabase
+    .from("v3_progress")
+    .delete()
+    .eq("candidate_id", id);
+
+  if (progressError) {
+    return jsonResponse({ error: progressError.message }, 500);
+  }
+
+  const { error: candidateError } = await supabase
+    .from("v3_candidates")
+    .delete()
+    .eq("id", id);
+
+  if (candidateError) {
+    return jsonResponse({ error: candidateError.message }, 500);
+  }
+
+  return jsonResponse({ status: "ok" }, 200);
+}
+
+async function handleUpdateCandidate(body: SyncRequestBody) {
+  const id = body.id;
+  if (!id) {
+    return jsonResponse({ error: "id is required" }, 400);
+  }
+
+  const update: Record<string, unknown> = {};
+  if (body.name !== undefined) update.name = body.name;
+  if (body.election_name !== undefined) update.election_name = body.election_name;
+  if (body.prefecture !== undefined) update.prefecture = body.prefecture;
+  if (body.sheet_id !== undefined) update.sheet_id = body.sheet_id;
+
+  if (Object.keys(update).length === 0) {
+    return jsonResponse({ error: "no fields to update" }, 400);
+  }
+
+  const { error } = await supabase
+    .from("v3_candidates")
+    .update(update)
+    .eq("id", id);
+
+  if (error) {
+    return jsonResponse({ error: error.message }, 500);
+  }
+
+  return jsonResponse({ status: "ok" }, 200);
+}
+
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
+
   if (req.method !== "POST") {
     return jsonResponse({ error: "method not allowed" }, 405);
   }
@@ -47,6 +198,24 @@ Deno.serve(async (req) => {
 
   if (!V3_SYNC_TOKEN || body.token !== V3_SYNC_TOKEN) {
     return jsonResponse({ error: "unauthorized" }, 401);
+  }
+
+  const action = body.action ?? "sync";
+
+  if (action === "createCandidate") {
+    return await handleCreateCandidate(body);
+  }
+
+  if (action === "deleteCandidate") {
+    return await handleDeleteCandidate(body);
+  }
+
+  if (action === "updateCandidate") {
+    return await handleUpdateCandidate(body);
+  }
+
+  if (action !== "sync") {
+    return jsonResponse({ error: `unknown action: ${action}` }, 400);
   }
 
   const records: SyncRecord[] = body.records ??

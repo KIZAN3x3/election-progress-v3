@@ -133,6 +133,19 @@ async function sbFetchJson(path){
   return res.json();
 }
 
+async function edgeFetch(body){
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/v3-sync-progress`, {
+    method: 'POST',
+    headers: {
+      'apikey': SUPABASE_KEY,
+      'Authorization': 'Bearer ' + SUPABASE_KEY,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ token: V3_SYNC_TOKEN, ...body })
+  });
+  return res;
+}
+
 let allCandidates = [];
 let statsByCandidate = {};
 
@@ -233,9 +246,10 @@ async function deleteCandidate(id){
 
   if(!confirm(`本当に削除しますか？（${candidate.name}）`)) return;
 
-  const res = await sbFetch(`v3_candidates?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const res = await edgeFetch({ action: 'deleteCandidate', id });
   if(!res.ok){
-    alert('削除に失敗しました');
+    const data = await res.json().catch(() => ({}));
+    alert(data.error || '削除に失敗しました');
     return;
   }
 
@@ -288,14 +302,18 @@ async function saveEdit(){
   showEditMessage('', '');
 
   try {
-    const res = await sbFetch(`v3_candidates?id=eq.${encodeURIComponent(editingCandidateId)}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-      body: JSON.stringify({ name, election_name: election, prefecture, sheet_id: sheetId || null })
+    const res = await edgeFetch({
+      action: 'updateCandidate',
+      id: editingCandidateId,
+      name,
+      election_name: election,
+      prefecture,
+      sheet_id: sheetId || null
     });
 
     if(!res.ok){
-      showEditMessage('更新に失敗しました', 'error');
+      const data = await res.json().catch(() => ({}));
+      showEditMessage(data.error || '更新に失敗しました', 'error');
       return;
     }
 
