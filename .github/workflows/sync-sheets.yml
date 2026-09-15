@@ -14,10 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: "npm"
@@ -29,5 +29,7 @@ jobs:
         env:
           SUPABASE_KEY: "sb_publishable_UnDHy2FKZHZkUTiSAR8isg_V8B3w4Eb"
           V3_SYNC_TOKEN: ${{ secrets.V3_SYNC_TOKEN }}
+          # GOOGLE_SERVICE_ACCOUNT_KEY_B64未設定の間はGOOGLE_SERVICE_ACCOUNT_KEYにフォールバックする
+          GOOGLE_SERVICE_ACCOUNT_KEY_B64: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY_B64 }}
           GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
         run: npm run sync-sheets

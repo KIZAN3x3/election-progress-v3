@@ -4,13 +4,20 @@ const SUPABASE_URL = process.env.SUPABASE_URL || "https://hhlqgxmhbpfhjnjmradq.s
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const SYNC_URL = process.env.SYNC_URL || `${SUPABASE_URL}/functions/v1/v3-sync-progress`;
 const SYNC_TOKEN = process.env.V3_SYNC_TOKEN;
-const SERVICE_ACCOUNT_KEY_JSON = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
+// 複数行のJSONシークレットをそのまま登録するとGitHub Actionsのログマスクが
+// { } を誤検知してログを潰すため、base64化した値を優先して受け付ける
+const SERVICE_ACCOUNT_KEY_B64 = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_B64;
+const SERVICE_ACCOUNT_KEY_JSON = SERVICE_ACCOUNT_KEY_B64
+  ? Buffer.from(SERVICE_ACCOUNT_KEY_B64, "base64").toString("utf-8")
+  : process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
 
 const INFO_SHEET_NAME = "選挙情報・SNS情報ページ";
 const LIST_SHEET_NAME = "広報物一覧・進捗確認ページ";
 const CANDIDATE_ID_LABEL = "候補者ID";
 const MODIFIED_TIME_CHECK_CONCURRENCY = 5;
 const SYNC_REQUEST_TIMEOUT_MS = 30000;
+const SYNC_REQUEST_RETRIES = 1;
+const FAILURE_RATIO_THRESHOLD = 0.5;
 
 function requireEnv(name, value) {
   if (!value) {
@@ -144,22 +151,6 @@ async function fetchModifiedTimes(driveApi, candidates) {
   return result;
 }
 
-async function updateSheetModifiedAt(candidateId, modifiedTime) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/v3_candidates?id=eq.${encodeURIComponent(candidateId)}`, {
-    method: "PATCH",
-    headers: {
-      apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
-      "Content-Type": "application/json",
-      Prefer: "return=minimal",
-    },
-    body: JSON.stringify({ sheet_modified_at: modifiedTime }),
-  });
-  if (!res.ok) {
-    console.error(`  sheet_modified_atの更新に失敗（candidate_id: ${candidateId}）: ${res.status} ${await res.text()}`);
-  }
-}
-
 async function readSheetValues(sheetsApi, spreadsheetId, sheetName) {
   const res = await withRetry(() =>
     sheetsApi.spreadsheets.values.get({
@@ -170,7 +161,7 @@ async function readSheetValues(sheetsApi, spreadsheetId, sheetName) {
   return res.data.values || [];
 }
 
-async function syncOneCandidate(sheetsApi, candidate) {
+async function syncOneCandidate(sheetsApi, candidate, modifiedTime) {
   const infoRows = await readSheetValues(sheetsApi, candidate.sheet_id, INFO_SHEET_NAME);
   const listRows = await readSheetValues(sheetsApi, candidate.sheet_id, LIST_SHEET_NAME);
 
@@ -202,7 +193,7 @@ async function syncOneCandidate(sheetsApi, candidate) {
           "Content-Type": "application/json; charset=utf-8",
           Authorization: `Bearer ${SUPABASE_KEY}`,
         },
-        body: JSON.stringify({ token: SYNC_TOKEN, records }),
+        body: JSON.stringify({ token: SYNC_TOKEN, records, modifiedTime }),
         signal: controller.signal,
       });
 
@@ -222,7 +213,7 @@ async function syncOneCandidate(sheetsApi, candidate) {
     } finally {
       clearTimeout(timeoutId);
     }
-  });
+  }, SYNC_REQUEST_RETRIES);
 
   let body;
   try {
@@ -266,7 +257,15 @@ async function main() {
   for (const candidate of candidates) {
     const modifiedTime = modifiedTimes.get(candidate.id);
     // modifiedTime取得に失敗した場合はフェイルセーフに同期対象とする
-    const changed = !modifiedTime || modifiedTime !== candidate.sheet_modified_at;
+    if (!modifiedTime) {
+      toSync.push({ ...candidate, _fetchedModifiedTime: modifiedTime });
+      continue;
+    }
+
+    const fetchedMs = Date.parse(modifiedTime);
+    const storedMs = candidate.sheet_modified_at ? Date.parse(candidate.sheet_modified_at) : NaN;
+    // sheet_modified_at未設定、またはDrive側が新しい場合のみ要同期とする
+    const changed = Number.isNaN(storedMs) || fetchedMs > storedMs;
     if (changed) {
       toSync.push({ ...candidate, _fetchedModifiedTime: modifiedTime });
     } else {
@@ -280,14 +279,10 @@ async function main() {
 
   for (const candidate of toSync) {
     try {
-      await syncOneCandidate(sheetsApi, candidate);
+      const modifiedTime = candidate._fetchedModifiedTime || (await fetchModifiedTime(driveApi, candidate.sheet_id));
+      await syncOneCandidate(sheetsApi, candidate, modifiedTime);
       successCount++;
       console.log(`OK: ${candidate.candidate_code}（${candidate.name}）`);
-
-      const latestModifiedTime = candidate._fetchedModifiedTime || (await fetchModifiedTime(driveApi, candidate.sheet_id));
-      if (latestModifiedTime) {
-        await updateSheetModifiedAt(candidate.id, latestModifiedTime);
-      }
     } catch (e) {
       failures.push({ candidate_code: candidate.candidate_code, name: candidate.name, error: e.message });
       console.error(`NG: ${candidate.candidate_code}（${candidate.name}） - ${e.message}`);
@@ -301,7 +296,8 @@ async function main() {
     failures.forEach((f) => console.log(`  - ${f.candidate_code}（${f.name}）: ${f.error}`));
   }
 
-  if (failures.length > 0) {
+  // 一過性の失敗でランが埋まらないよう、失敗率が閾値を超えた場合のみ全体を失敗扱いにする
+  if (toSync.length > 0 && failures.length / toSync.length > FAILURE_RATIO_THRESHOLD) {
     process.exitCode = 1;
   }
 }
