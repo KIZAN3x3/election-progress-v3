@@ -28,6 +28,7 @@ interface SyncRequestBody {
   period?: string;
   items?: ProgressItem[];
   records?: SyncRecord[];
+  modifiedTime?: string;
   // createCandidate (single or bulk)
   name?: string;
   election_name?: string;
@@ -228,6 +229,7 @@ Deno.serve(async (req) => {
   }
 
   const results: Array<{ candidate_code: string; status: string; synced?: number; deleted?: number; changed?: boolean; error?: string }> = [];
+  const candidateSyncOk = new Map<string, boolean>();
 
   for (const record of records) {
     const { candidate_code, period, items } = record;
@@ -262,6 +264,7 @@ Deno.serve(async (req) => {
       .eq("period", period);
 
     if (existingError) {
+      candidateSyncOk.set(candidate.id, false);
       results.push({ candidate_code, status: "error", error: existingError.message });
       continue;
     }
@@ -292,6 +295,7 @@ Deno.serve(async (req) => {
         .in("item_name", staleNames);
 
       if (deleteError) {
+        candidateSyncOk.set(candidate.id, false);
         results.push({ candidate_code, status: "error", error: deleteError.message });
         continue;
       }
@@ -314,6 +318,7 @@ Deno.serve(async (req) => {
         .upsert(rows, { onConflict: "candidate_id,period,item_name" });
 
       if (upsertError) {
+        candidateSyncOk.set(candidate.id, false);
         results.push({ candidate_code, status: "error", error: upsertError.message });
         continue;
       }
@@ -327,12 +332,33 @@ Deno.serve(async (req) => {
         .eq("id", candidate.id);
 
       if (touchError) {
+        candidateSyncOk.set(candidate.id, false);
         results.push({ candidate_code, status: "error", error: touchError.message });
         continue;
       }
     }
 
+    if (!candidateSyncOk.has(candidate.id)) {
+      candidateSyncOk.set(candidate.id, true);
+    }
     results.push({ candidate_code, status: "ok", synced: syncedCount, deleted: staleNames.length, changed: hasChange });
+  }
+
+  if (body.modifiedTime) {
+    const idsToUpdate = [...candidateSyncOk.entries()]
+      .filter(([, ok]) => ok)
+      .map(([id]) => id);
+
+    if (idsToUpdate.length > 0) {
+      const { error: modifiedAtError } = await supabase
+        .from("v3_candidates")
+        .update({ sheet_modified_at: body.modifiedTime })
+        .in("id", idsToUpdate);
+
+      if (modifiedAtError) {
+        console.error("sheet_modified_at update failed:", modifiedAtError.message);
+      }
+    }
   }
 
   const hasError = results.some((r) => r.status === "error");
