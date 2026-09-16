@@ -93,12 +93,25 @@ if(v3Auth !== '1' && v3Auth !== '2'){
 
 const CODE_PATTERN = /^[A-Za-z0-9-]+$/;
 const SHEET_URL_PATTERN = /\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/;
+const SHEET_ID_PATTERN = /^[a-zA-Z0-9_-]{25,}$/;
+const MASTER_SHEET_ID = '1q4Vimnn6BHqxCpfcCcRsmvWCvC4J6jGP6avLoOu-mGk';
 
 function extractSheetId(input){
   const trimmed = input.trim();
   if(!trimmed) return '';
   const match = trimmed.match(SHEET_URL_PATTERN);
   return match ? match[1] : trimmed;
+}
+
+// 一括登録の5列目を解析する。空欄はok、URL/シートIDらしい文字列もok、
+// それ以外（リンク付き文字やチップのコピーなど）はng（形式エラー）として扱う
+function parseSheetIdInput(input){
+  const trimmed = (input || '').trim();
+  if(!trimmed) return { ok: true, id: '' };
+  const match = trimmed.match(SHEET_URL_PATTERN);
+  if(match) return { ok: true, id: match[1] };
+  if(SHEET_ID_PATTERN.test(trimmed)) return { ok: true, id: trimmed };
+  return { ok: false, id: '' };
 }
 
 const prefectureSelect = document.getElementById('prefecture');
@@ -149,6 +162,10 @@ async function submitCandidate(){
     showMessage('候補者IDは半角英数字とハイフンのみ使用できます', 'error');
     return;
   }
+  if(sheetId === MASTER_SHEET_ID){
+    showMessage('マスターシートのIDです', 'error');
+    return;
+  }
 
   submitBtn.disabled = true;
   showMessage('', '');
@@ -189,7 +206,7 @@ function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
 }
 
-function renderBulkResult({ insertedCount, formatErrorCodes, duplicateCodes }){
+function renderBulkResult({ insertedCount, formatErrorCodes, duplicateCodes, masterSheetCodes, missingSheetCodes }){
   const el = document.getElementById('bulkResult');
   let html = `<div class="result-line success">${insertedCount}件登録しました</div>`;
   html += `<div class="result-line${formatErrorCodes.length ? ' error' : ''}">${formatErrorCodes.length}件は形式エラーでスキップ</div>`;
@@ -199,6 +216,14 @@ function renderBulkResult({ insertedCount, formatErrorCodes, duplicateCodes }){
   html += `<div class="result-line${duplicateCodes.length ? ' error' : ''}">${duplicateCodes.length}件は既存IDと重複のためスキップ</div>`;
   if(duplicateCodes.length){
     html += `<div class="code-list">${duplicateCodes.map(escapeHtml).join(', ')}</div>`;
+  }
+  html += `<div class="result-line${masterSheetCodes.length ? ' error' : ''}">${masterSheetCodes.length}件はマスターシートのIDが入力されているためスキップ</div>`;
+  if(masterSheetCodes.length){
+    html += `<div class="code-list">${masterSheetCodes.map(escapeHtml).join(', ')}</div>`;
+  }
+  if(missingSheetCodes.length){
+    html += `<div class="result-line error">シート未設定：${missingSheetCodes.length}件（ID一覧）</div>`;
+    html += `<div class="code-list">${missingSheetCodes.map(escapeHtml).join(', ')}</div>`;
   }
   el.innerHTML = html;
 }
@@ -212,8 +237,10 @@ async function submitBulk(){
 
   const formatErrorCodes = [];
   const duplicateCodes = [];
+  const masterSheetCodes = [];
   const candidateRows = [];
   const seenCodes = new Set();
+  const missingSheetCandidateSet = new Set();
 
   lines.forEach((line, i) => {
     const cols = line.split('\t');
@@ -221,12 +248,23 @@ async function submitBulk(){
     const name = (cols[1] || '').trim();
     const election = (cols[2] || '').trim();
     const prefecture = (cols[3] || '').trim();
-    const sheetId = extractSheetId((cols[4] || '').trim());
+    const sheetInput = cols[4] || '';
 
     const label = code || `(${i + 1}行目: ID未入力)`;
 
-    if(!code || !CODE_PATTERN.test(code) || !name || !PREFECTURE_SET.has(prefecture)){
+    if(!code || !CODE_PATTERN.test(code) || !name || !election || !PREFECTURE_SET.has(prefecture)){
       formatErrorCodes.push(label);
+      return;
+    }
+
+    const parsedSheet = parseSheetIdInput(sheetInput);
+    if(!parsedSheet.ok){
+      formatErrorCodes.push(label);
+      return;
+    }
+
+    if(parsedSheet.id === MASTER_SHEET_ID){
+      masterSheetCodes.push(label);
       return;
     }
 
@@ -235,11 +273,14 @@ async function submitBulk(){
       return;
     }
     seenCodes.add(code);
-    candidateRows.push({ candidate_code: code, name, election_name: election, prefecture, sheet_id: sheetId || null });
+    if(!parsedSheet.id){
+      missingSheetCandidateSet.add(code);
+    }
+    candidateRows.push({ candidate_code: code, name, election_name: election, prefecture, sheet_id: parsedSheet.id || null });
   });
 
   if(candidateRows.length === 0){
-    renderBulkResult({ insertedCount: 0, formatErrorCodes, duplicateCodes });
+    renderBulkResult({ insertedCount: 0, formatErrorCodes, duplicateCodes, masterSheetCodes, missingSheetCodes: [] });
     return;
   }
 
@@ -266,11 +307,17 @@ async function submitBulk(){
     }
 
     let insertedCount = 0;
+    const missingSheetCodes = [];
     results.forEach(r => {
       if(r.status === 'ok'){
         insertedCount++;
+        if(missingSheetCandidateSet.has(r.candidate_code)){
+          missingSheetCodes.push(r.candidate_code);
+        }
       } else if(r.reason === 'duplicate'){
         duplicateCodes.push(r.candidate_code);
+      } else if(r.reason === 'master_sheet'){
+        masterSheetCodes.push(r.candidate_code);
       } else {
         formatErrorCodes.push(r.candidate_code);
       }
@@ -280,7 +327,7 @@ async function submitBulk(){
       textarea.value = '';
     }
 
-    renderBulkResult({ insertedCount, formatErrorCodes, duplicateCodes });
+    renderBulkResult({ insertedCount, formatErrorCodes, duplicateCodes, masterSheetCodes, missingSheetCodes });
   } catch (e) {
     resultEl.innerHTML = '<div class="result-line error">一括登録に失敗しました</div>';
   } finally {

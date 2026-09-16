@@ -45,6 +45,19 @@ const V3_SYNC_TOKEN = Deno.env.get("V3_SYNC_TOKEN");
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+// admin.html/list.htmlの誤操作で候補者シートにマスターシートのIDが
+// 登録されるのを防ぐためのガード（クライアント側チェックのバイパス対策）
+const MASTER_SHEET_ID = "1q4Vimnn6BHqxCpfcCcRsmvWCvC4J6jGP6avLoOu-mGk";
+const SHEET_URL_PATTERN = /\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/;
+
+function extractSheetId(input: string | null | undefined): string {
+  if (!input) return "";
+  const trimmed = String(input).trim();
+  if (!trimmed) return "";
+  const match = trimmed.match(SHEET_URL_PATTERN);
+  return match ? match[1] : trimmed;
+}
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -76,10 +89,20 @@ async function handleCreateCandidate(body: SyncRequestBody) {
     const name = input.name?.trim();
     const electionName = input.election_name?.trim();
     const prefecture = input.prefecture?.trim();
-    const sheetId = input.sheet_id || null;
+    const sheetId = extractSheetId(input.sheet_id) || null;
 
     if (!candidateCode || !name || !electionName || !prefecture) {
       results.push({ candidate_code: candidateCode ?? "", status: "error", error: "必須項目が不足しています" });
+      continue;
+    }
+
+    if (sheetId === MASTER_SHEET_ID) {
+      results.push({
+        candidate_code: candidateCode,
+        status: "error",
+        error: "マスターシートのIDです",
+        reason: "master_sheet",
+      });
       continue;
     }
 
@@ -163,7 +186,13 @@ async function handleUpdateCandidate(body: SyncRequestBody) {
   if (body.name !== undefined) update.name = body.name;
   if (body.election_name !== undefined) update.election_name = body.election_name;
   if (body.prefecture !== undefined) update.prefecture = body.prefecture;
-  if (body.sheet_id !== undefined) update.sheet_id = body.sheet_id;
+  if (body.sheet_id !== undefined) {
+    const sheetId = extractSheetId(body.sheet_id) || null;
+    if (sheetId === MASTER_SHEET_ID) {
+      return jsonResponse({ error: "マスターシートのIDです" }, 400);
+    }
+    update.sheet_id = sheetId;
+  }
 
   if (Object.keys(update).length === 0) {
     return jsonResponse({ error: "no fields to update" }, 400);
