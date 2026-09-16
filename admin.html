@@ -114,6 +114,17 @@ function parseSheetIdInput(input){
   return { ok: false, id: '' };
 }
 
+// 一括登録の1行分の基本項目（ID・名前・選挙名・都道府県）を検証し、
+// 問題があれば具体的な理由を返す（問題なければnull）
+function validateBulkRow(code, name, election, prefecture){
+  if(!code) return '候補者IDが未入力です';
+  if(!CODE_PATTERN.test(code)) return '候補者IDに使えない文字が含まれています（半角英数字とハイフンのみ）';
+  if(!name) return '候補者名が未入力です';
+  if(!election) return '選挙名が未入力です';
+  if(!PREFECTURE_SET.has(prefecture)) return '都道府県名が不正です';
+  return null;
+}
+
 const prefectureSelect = document.getElementById('prefecture');
 PREFECTURES.forEach(pref => {
   const opt = document.createElement('option');
@@ -206,20 +217,24 @@ function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
 }
 
-function renderBulkResult({ insertedCount, formatErrorCodes, duplicateCodes, masterSheetCodes, missingSheetCodes }){
+function renderEntryList(entries){
+  return `<div class="code-list">${entries.map(e => escapeHtml(`${e.code}: ${e.reason}`)).join('<br>')}</div>`;
+}
+
+function renderBulkResult({ insertedCount, formatErrorEntries, duplicateEntries, masterSheetEntries, missingSheetCodes }){
   const el = document.getElementById('bulkResult');
   let html = `<div class="result-line success">${insertedCount}件登録しました</div>`;
-  html += `<div class="result-line${formatErrorCodes.length ? ' error' : ''}">${formatErrorCodes.length}件は形式エラーでスキップ</div>`;
-  if(formatErrorCodes.length){
-    html += `<div class="code-list">${formatErrorCodes.map(escapeHtml).join(', ')}</div>`;
+  html += `<div class="result-line${formatErrorEntries.length ? ' error' : ''}">${formatErrorEntries.length}件は形式エラーでスキップ</div>`;
+  if(formatErrorEntries.length){
+    html += renderEntryList(formatErrorEntries);
   }
-  html += `<div class="result-line${duplicateCodes.length ? ' error' : ''}">${duplicateCodes.length}件は既存IDと重複のためスキップ</div>`;
-  if(duplicateCodes.length){
-    html += `<div class="code-list">${duplicateCodes.map(escapeHtml).join(', ')}</div>`;
+  html += `<div class="result-line${duplicateEntries.length ? ' error' : ''}">${duplicateEntries.length}件は既存IDと重複のためスキップ</div>`;
+  if(duplicateEntries.length){
+    html += renderEntryList(duplicateEntries);
   }
-  html += `<div class="result-line${masterSheetCodes.length ? ' error' : ''}">${masterSheetCodes.length}件はマスターシートのIDが入力されているためスキップ</div>`;
-  if(masterSheetCodes.length){
-    html += `<div class="code-list">${masterSheetCodes.map(escapeHtml).join(', ')}</div>`;
+  html += `<div class="result-line${masterSheetEntries.length ? ' error' : ''}">${masterSheetEntries.length}件はマスターシートのIDが入力されているためスキップ</div>`;
+  if(masterSheetEntries.length){
+    html += renderEntryList(masterSheetEntries);
   }
   if(missingSheetCodes.length){
     html += `<div class="result-line error">シート未設定：${missingSheetCodes.length}件（ID一覧）</div>`;
@@ -235,15 +250,18 @@ async function submitBulk(){
 
   const lines = textarea.value.split(/\r\n|\r|\n/).filter(line => line.trim() !== '');
 
-  const formatErrorCodes = [];
-  const duplicateCodes = [];
-  const masterSheetCodes = [];
+  const formatErrorEntries = [];
+  const duplicateEntries = [];
+  const masterSheetEntries = [];
   const candidateRows = [];
   const seenCodes = new Set();
   const missingSheetCandidateSet = new Set();
 
   lines.forEach((line, i) => {
-    const cols = line.split('\t');
+    const rawCols = line.split('\t');
+    // 姓・名の列が先頭に付いた7列（姓・名・ID・名前・選挙名・都道府県・URL）で
+    // 貼り付けられた場合は、後ろ5列（ID・名前・選挙名・都道府県・URL）を使う
+    const cols = rawCols.length >= 7 ? rawCols.slice(rawCols.length - 5) : rawCols;
     const code = (cols[0] || '').trim();
     const name = (cols[1] || '').trim();
     const election = (cols[2] || '').trim();
@@ -252,24 +270,25 @@ async function submitBulk(){
 
     const label = code || `(${i + 1}行目: ID未入力)`;
 
-    if(!code || !CODE_PATTERN.test(code) || !name || !election || !PREFECTURE_SET.has(prefecture)){
-      formatErrorCodes.push(label);
+    const rowError = validateBulkRow(code, name, election, prefecture);
+    if(rowError){
+      formatErrorEntries.push({ code: label, reason: rowError });
       return;
     }
 
     const parsedSheet = parseSheetIdInput(sheetInput);
     if(!parsedSheet.ok){
-      formatErrorCodes.push(label);
+      formatErrorEntries.push({ code: label, reason: 'シート列がURLでもシートIDでもない形式です' });
       return;
     }
 
     if(parsedSheet.id === MASTER_SHEET_ID){
-      masterSheetCodes.push(label);
+      masterSheetEntries.push({ code: label, reason: 'マスターシートのIDです' });
       return;
     }
 
     if(seenCodes.has(code)){
-      duplicateCodes.push(code);
+      duplicateEntries.push({ code, reason: '貼り付け内で候補者IDが重複しています' });
       return;
     }
     seenCodes.add(code);
@@ -280,7 +299,7 @@ async function submitBulk(){
   });
 
   if(candidateRows.length === 0){
-    renderBulkResult({ insertedCount: 0, formatErrorCodes, duplicateCodes, masterSheetCodes, missingSheetCodes: [] });
+    renderBulkResult({ insertedCount: 0, formatErrorEntries, duplicateEntries, masterSheetEntries, missingSheetCodes: [] });
     return;
   }
 
@@ -315,11 +334,11 @@ async function submitBulk(){
           missingSheetCodes.push(r.candidate_code);
         }
       } else if(r.reason === 'duplicate'){
-        duplicateCodes.push(r.candidate_code);
+        duplicateEntries.push({ code: r.candidate_code, reason: r.error || 'この候補者IDは既に登録されています' });
       } else if(r.reason === 'master_sheet'){
-        masterSheetCodes.push(r.candidate_code);
+        masterSheetEntries.push({ code: r.candidate_code, reason: r.error || 'マスターシートのIDです' });
       } else {
-        formatErrorCodes.push(r.candidate_code);
+        formatErrorEntries.push({ code: r.candidate_code, reason: r.error || '登録に失敗しました' });
       }
     });
 
@@ -327,7 +346,7 @@ async function submitBulk(){
       textarea.value = '';
     }
 
-    renderBulkResult({ insertedCount, formatErrorCodes, duplicateCodes, masterSheetCodes, missingSheetCodes });
+    renderBulkResult({ insertedCount, formatErrorEntries, duplicateEntries, masterSheetEntries, missingSheetCodes });
   } catch (e) {
     resultEl.innerHTML = '<div class="result-line error">一括登録に失敗しました</div>';
   } finally {
