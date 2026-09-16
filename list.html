@@ -150,6 +150,7 @@ let allCandidates = [];
 let statsByCandidate = {};
 
 const SHEET_URL_PATTERN = /\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/;
+const MASTER_SHEET_ID = '1q4Vimnn6BHqxCpfcCcRsmvWCvC4J6jGP6avLoOu-mGk';
 
 function extractSheetId(input){
   const trimmed = input.trim();
@@ -295,6 +296,10 @@ async function saveEdit(){
 
   if(!name || !election || !prefecture){
     showEditMessage('すべての項目を入力してください', 'error');
+    return;
+  }
+  if(sheetId === MASTER_SHEET_ID){
+    showEditMessage('マスターシートのIDです', 'error');
     return;
   }
 
