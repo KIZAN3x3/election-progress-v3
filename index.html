@@ -32,16 +32,20 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
   <div class="login-error" id="loginError"></div>
 </div>
 <script>
-const ADMIN_PASSWORD = 'sanseikouhou123-v3';
-const VIEWER_PASSWORD = '600tousen';
-function login(){
-  const pw = document.getElementById('pw').value;
-  if(pw === ADMIN_PASSWORD){
+const ADMIN_HASH = 'f4f8997560b63a0ccde82ac8ee3acc2c4a6ab17cfb372b489de6684b0b31e910';
+const VIEWER_HASH = '21bbd7e965eacf9d59f95980de57482a0d93147ab3b27b0e30d9b3191c62cc6e';
+async function sha256Hex(text){
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+async function login(){
+  const pw = await sha256Hex(document.getElementById('pw').value);
+  if(pw === ADMIN_HASH){
     sessionStorage.setItem('v3_auth', '1');
     location.href = 'list.html';
     return;
   }
-  if(pw === VIEWER_PASSWORD){
+  if(pw === VIEWER_HASH){
     sessionStorage.setItem('v3_auth', '2');
     location.href = 'list.html';
     return;
