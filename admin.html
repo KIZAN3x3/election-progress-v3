@@ -133,6 +133,8 @@ PREFECTURES.forEach(pref => {
   prefectureSelect.appendChild(opt);
 });
 
+const WRITE_DISABLED_MESSAGE = '現在、セキュリティ対応のため画面からの登録・編集・削除を停止しています。必要な場合はシステム担当までご連絡ください。';
+
 async function edgeFetch(body){
   const res = await fetch(`${SUPABASE_URL}/functions/v1/v3-sync-progress`, {
     method: 'POST',
@@ -141,7 +143,7 @@ async function edgeFetch(body){
       'Authorization': 'Bearer ' + SUPABASE_KEY,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ token: V3_SYNC_TOKEN, ...body })
+    body: JSON.stringify(body)
   });
   return res;
 }
@@ -153,6 +155,8 @@ function showMessage(text, type){
 }
 
 async function submitCandidate(){
+  alert(WRITE_DISABLED_MESSAGE);
+  return;
   const codeInput = document.getElementById('candidateCode');
   const nameInput = document.getElementById('candidateName');
   const electionInput = document.getElementById('electionName');
@@ -244,6 +248,8 @@ function renderBulkResult({ insertedCount, formatErrorEntries, duplicateEntries,
 }
 
 async function submitBulk(){
+  alert(WRITE_DISABLED_MESSAGE);
+  return;
   const textarea = document.getElementById('bulkText');
   const bulkSubmitBtn = document.getElementById('bulkSubmitBtn');
   const resultEl = document.getElementById('bulkResult');
