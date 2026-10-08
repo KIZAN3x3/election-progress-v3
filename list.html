@@ -133,6 +133,8 @@ async function sbFetchJson(path){
   return res.json();
 }
 
+const WRITE_DISABLED_MESSAGE = '現在、セキュリティ対応のため画面からの登録・編集・削除を停止しています。必要な場合はシステム担当までご連絡ください。';
+
 async function edgeFetch(body){
   const res = await fetch(`${SUPABASE_URL}/functions/v1/v3-sync-progress`, {
     method: 'POST',
@@ -141,7 +143,7 @@ async function edgeFetch(body){
       'Authorization': 'Bearer ' + SUPABASE_KEY,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ token: V3_SYNC_TOKEN, ...body })
+    body: JSON.stringify(body)
   });
   return res;
 }
@@ -242,6 +244,8 @@ function escapeHtml(str){
 }
 
 async function deleteCandidate(id){
+  alert(WRITE_DISABLED_MESSAGE);
+  return;
   const candidate = allCandidates.find(c => c.id === id);
   if(!candidate) return;
 
@@ -286,6 +290,8 @@ function showEditMessage(text, type){
 }
 
 async function saveEdit(){
+  alert(WRITE_DISABLED_MESSAGE);
+  return;
   if(!editingCandidateId) return;
 
   const name = document.getElementById('editCandidateName').value.trim();
