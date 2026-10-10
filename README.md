@@ -41,7 +41,8 @@ Google ログイン（Supabase Auth）＋管理者承認制です。共通パス
 |---|---|
 | `v3_candidates` / `v3_progress` の読み取り | RLS（`0002`）。`authenticated` かつ `is_active_user()` のときだけ読める。ログインしていない・承認待ち・無効の人は 0 件 |
 | 候補者の登録・編集・削除 | Edge Function `v3-sync-progress` が JWT を照合し、`v3_users` で `status=active` かつ `role=admin` の人だけ許可 |
-| 進捗の同期（`action=sync`） | 今までどおり `V3_SYNC_TOKEN` で照合（GitHub Actions・Apps Script 用） |
+| 進捗の同期（`action=sync`） | 今までどおり `V3_SYNC_TOKEN` で照合（GitHub Actions 用。Apps Script にはトークンを置かない） |
+| Edge Function の入口 | `v3-sync-progress` は Supabase の JWT 検証（`verify_jwt: true`）も有効。`v3-users` は `verify_jwt: false` で、関数の中の `getUser` で照合 |
 | 利用者管理 | Edge Function `v3-users`。JWT を照合し、管理者の操作は有効な管理者だけ。自分自身の無効化・降格・削除、最後の1人の管理者の無効化・降格・削除はできない。判定のあとで状態が変わっていたら 409 |
 | `v3_users` | RLS 有効・ポリシーなし。画面からは直接読めず、`v3-users`（service_role）だけが扱う |
 | ブラウザからの呼び出し元 | 両方の Edge Function の CORS を `https://kizan3x3.github.io` と `http://localhost:5500` だけに許可 |
@@ -76,7 +77,39 @@ Supabase プロジェクトや公開 URL を変えるときは、次をすべて
 | Edge Function の secret | Supabase → Edge Functions → Secrets | `V3_SYNC_TOKEN`（`SUPABASE_URL`・`SUPABASE_SERVICE_ROLE_KEY` は自動で入る） |
 | GitHub Secrets | GitHub → Settings → Secrets and variables → Actions | `V3_SYNC_TOKEN`、`SUPABASE_SECRET_KEY`、`GOOGLE_SERVICE_ACCOUNT_KEY_B64`（または `GOOGLE_SERVICE_ACCOUNT_KEY`） |
 | ワークフローの publishable key | `.github/workflows/sync-sheets.yml` | `SUPABASE_KEY` |
-| Apps Script のスクリプトプロパティ | 各 Apps Script プロジェクト | `V3_SYNC_TOKEN`（リアルタイム同期を使う場合）、`GITHUB_PAT`（`dispatch-trigger.gs`） |
+| Apps Script のスクリプトプロパティ | 各 Apps Script プロジェクト | `GITHUB_PAT`（`dispatch-trigger.gs`）。`V3_SYNC_TOKEN` は置かない方針 |
+
+### Edge Function のデプロイ
+
+`verify_jwt`（Supabase の入口での JWT 検証）は関数ごとに次の設定を保ちます。`--no-verify-jwt` を付けてデプロイすると `false` に変わるので、`v3-sync-progress` には付けません。
+
+| 関数 | verify_jwt | 理由 |
+|---|---|---|
+| `v3-sync-progress` | `true` | 同期の publishable key も、画面から送るログイン中の利用者のトークンも、この設定で入口を通る |
+| `v3-users` | `false` | 関数の中の `getUser` で照合する |
+
+事前の確認（設定は変えない）:
+
+```bash
+npx supabase functions list --project-ref hhlqgxmhbpfhjnjmradq   # 各関数の version と verify_jwt
+```
+
+デプロイ（`--use-api` は Docker を使わない指定。Docker が動いていれば無くてもよい）:
+
+```bash
+npx supabase functions deploy v3-users         --project-ref hhlqgxmhbpfhjnjmradq --no-verify-jwt --use-api
+npx supabase functions deploy v3-sync-progress --project-ref hhlqgxmhbpfhjnjmradq --use-api
+npx supabase functions list --project-ref hhlqgxmhbpfhjnjmradq   # v3-sync-progress: true / v3-users: false を確認
+```
+
+ロールバック（`v3-sync-progress` を前の版に戻す。`<commit>` は戻したい版のコミット）:
+
+```bash
+git checkout <commit> -- supabase/functions/v3-sync-progress/index.ts
+npx supabase functions deploy v3-sync-progress --project-ref hhlqgxmhbpfhjnjmradq --use-api
+git checkout HEAD -- supabase/functions/v3-sync-progress/index.ts
+npx supabase functions list --project-ref hhlqgxmhbpfhjnjmradq   # verify_jwt: true のままであること
+```
 
 切り替えの手順は [`docs/cutover-2026-10-11.md`](docs/cutover-2026-10-11.md) を参照してください。
 
