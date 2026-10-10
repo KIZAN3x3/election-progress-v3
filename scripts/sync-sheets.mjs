@@ -2,6 +2,9 @@ import { google } from "googleapis";
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "https://hhlqgxmhbpfhjnjmradq.supabase.co";
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
+// 候補者一覧のREST読み取り専用（RLSで読み取りがログインユーザーに限られるため）。
+// 新形式のsecret key（sb_secret_）はJWTではないので apikey ヘッダーだけで送り、Edge Functionには送らない
+const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY;
 const SYNC_URL = process.env.SYNC_URL || `${SUPABASE_URL}/functions/v1/v3-sync-progress`;
 const SYNC_TOKEN = process.env.V3_SYNC_TOKEN;
 // 複数行のJSONシークレットをそのまま登録するとGitHub Actionsのログマスクが
@@ -110,13 +113,18 @@ function buildRecords(candidateCode, items) {
 async function fetchCandidatesWithSheet() {
   const res = await fetch(
     `${SUPABASE_URL}/rest/v1/v3_candidates?select=id,candidate_code,name,sheet_id,sheet_modified_at&sheet_id=not.is.null`,
-    { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } }
+    { headers: { apikey: SUPABASE_SECRET_KEY } }
   );
   if (!res.ok) {
     throw new Error(`候補者一覧の取得に失敗しました（${res.status}）: ${await res.text()}`);
   }
   const rows = await res.json();
-  return rows.filter((c) => c.sheet_id && String(c.sheet_id).trim() !== "");
+  const candidates = rows.filter((c) => c.sheet_id && String(c.sheet_id).trim() !== "");
+  // RLSなどで読めなくなった場合に、何もせず成功扱いになるのを防ぐ
+  if (candidates.length === 0) {
+    throw new Error("候補者一覧が0件でした。キーの権限やRLSの設定を確認してください");
+  }
+  return candidates;
 }
 
 // 軽量にmodifiedTimeだけ取得する。取得失敗時はnullを返し、呼び出し側で
@@ -232,6 +240,7 @@ async function syncOneCandidate(sheetsApi, candidate, modifiedTime) {
 
 async function main() {
   requireEnv("SUPABASE_KEY", SUPABASE_KEY);
+  requireEnv("SUPABASE_SECRET_KEY", SUPABASE_SECRET_KEY);
   requireEnv("V3_SYNC_TOKEN", SYNC_TOKEN);
   requireEnv("GOOGLE_SERVICE_ACCOUNT_KEY", SERVICE_ACCOUNT_KEY_JSON);
 
