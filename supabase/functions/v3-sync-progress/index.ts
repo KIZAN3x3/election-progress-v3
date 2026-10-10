@@ -1,4 +1,6 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { corsHeaders, withCors } from "../_shared/cors.ts";
+import { getAuthContext, requireAdmin } from "../_shared/auth.ts";
 
 interface ProgressItem {
   item_name: string;
@@ -58,16 +60,10 @@ function extractSheetId(input: string | null | undefined): string {
   return match ? match[1] : trimmed;
 }
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
 function jsonResponse(body: unknown, status: number) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json", ...corsHeaders },
+    headers: { "Content-Type": "application/json" },
   });
 }
 
@@ -210,11 +206,11 @@ async function handleUpdateCandidate(body: SyncRequestBody) {
   return jsonResponse({ status: "ok" }, 200);
 }
 
-Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: corsHeaders });
-  }
+// 画面からの候補者の登録・編集・削除。トークンではなく、ログイン中の利用者の JWT を照合し、
+// v3_users で status=active かつ role=admin の人だけ許可する
+const ADMIN_ACTIONS = ["createCandidate", "deleteCandidate", "updateCandidate"];
 
+async function handle(req: Request): Promise<Response> {
   if (req.method !== "POST") {
     return jsonResponse({ error: "method not allowed" }, 405);
   }
@@ -226,11 +222,17 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: "invalid json body" }, 400);
   }
 
-  if (!V3_SYNC_TOKEN || body.token !== V3_SYNC_TOKEN) {
+  const action = body.action ?? "sync";
+
+  if (ADMIN_ACTIONS.includes(action)) {
+    const admin = requireAdmin(await getAuthContext(supabase, req));
+    if (!admin.ok) {
+      return jsonResponse({ error: admin.error }, admin.status);
+    }
+  } else if (!V3_SYNC_TOKEN || body.token !== V3_SYNC_TOKEN) {
+    // sync（action 省略時を含む）と未知の action は、今までどおりトークンで照合する
     return jsonResponse({ error: "unauthorized" }, 401);
   }
-
-  const action = body.action ?? "sync";
 
   if (action === "createCandidate") {
     return await handleCreateCandidate(body);
@@ -392,4 +394,11 @@ Deno.serve(async (req) => {
 
   const hasError = results.some((r) => r.status === "error");
   return jsonResponse({ results }, hasError ? 207 : 200);
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders(req) });
+  }
+  return withCors(req, await handle(req));
 });
