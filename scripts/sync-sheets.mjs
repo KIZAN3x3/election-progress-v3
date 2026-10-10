@@ -201,7 +201,8 @@ async function syncOneCandidate(sheetsApi, candidate, modifiedTime) {
           "Content-Type": "application/json; charset=utf-8",
           Authorization: `Bearer ${SUPABASE_KEY}`,
         },
-        body: JSON.stringify({ token: SYNC_TOKEN, records, modifiedTime }),
+        // fullSheet: シートの全 period を送っているので、シートから消えた見出しの行を掃除してよい
+        body: JSON.stringify({ token: SYNC_TOKEN, records, modifiedTime, fullSheet: true }),
         signal: controller.signal,
       });
 
@@ -230,12 +231,27 @@ async function syncOneCandidate(sheetsApi, candidate, modifiedTime) {
     throw new Error(`同期レスポンスの解析に失敗しました: ${bodyText}`);
   }
 
+  logCleanup(body.cleanup);
+
   const errorResult = (body.results || []).find((r) => r.status === "error");
   if (errorResult) {
     throw new Error(`同期処理でエラーが返されました: ${JSON.stringify(errorResult)}`);
   }
 
   return body;
+}
+
+// シートから消えた見出しの行の掃除結果をログに出す（削除・警告・エラーがあったときだけ）
+function logCleanup(cleanup) {
+  if (!Array.isArray(cleanup)) return;
+  for (const c of cleanup) {
+    if (c.deleted && c.deleted.length > 0) {
+      console.log(`  見出しの掃除: ${c.candidate_code} から ${c.deleted.length}件削除`);
+      c.deleted.forEach((r) => console.log(`    - 【${r.period}】${r.item_name}（${r.status}）`));
+    }
+    if (c.warning) console.warn(`  見出しの掃除（警告）: ${c.candidate_code} - ${c.warning}`);
+    if (c.error) console.error(`  見出しの掃除（エラー）: ${c.candidate_code} - ${c.error}`);
+  }
 }
 
 async function main() {
