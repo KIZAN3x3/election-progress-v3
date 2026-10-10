@@ -35,9 +35,31 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
 .bulk-result .result-line.success{color:var(--done);}
 .bulk-result .result-line.error{color:var(--danger);}
 .bulk-result .code-list{font-size:12px;color:var(--text3);background:var(--surface2);border-radius:var(--radius-sm);padding:8px 10px;margin-top:4px;word-break:break-all;}
+.users-content{max-width:900px;padding-top:0;}
+.users-head{display:flex;align-items:center;gap:10px;margin-bottom:8px;}
+.users-head h2{margin-bottom:0 !important;}
+.small-btn{background:transparent;border:1px solid var(--border);color:var(--text2);border-radius:var(--radius-sm);padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;transition:all .15s;}
+.small-btn:hover{border-color:var(--accent);color:var(--accent2);}
+.small-btn:disabled{opacity:.6;cursor:not-allowed;}
+.small-btn.primary{background:var(--accent);border-color:var(--accent);color:white;}
+.small-btn.primary:hover{background:var(--accent2);border-color:var(--accent2);color:white;}
+.small-btn.danger:hover{background:var(--danger);border-color:var(--danger);color:white;}
+.users-head .small-btn{margin-left:auto;}
+.users-group{margin-top:16px;}
+.users-group summary{font-size:14px;font-weight:700;cursor:pointer;padding:6px 0;}
+.users-group-list{display:flex;flex-direction:column;gap:8px;margin-top:8px;}
+.users-empty{font-size:12px;color:var(--text3);padding:8px 0;}
+.user-card{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;}
+.user-card-name{font-size:14px;font-weight:700;word-break:break-all;}
+.user-card-self{font-size:11px;color:var(--text3);font-weight:600;margin-left:6px;}
+.user-card-meta{font-size:12px;color:var(--text2);line-height:1.7;margin-top:4px;word-break:break-all;}
+.user-card-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:10px;}
+.user-card-actions select{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);padding:5px 8px;font-size:12px;font-family:inherit;}
+.user-card-note{font-size:11px;color:var(--text3);margin-top:8px;}
+body.auth-pending > *{visibility:hidden;}
 </style>
 </head>
-<body>
+<body class="auth-pending">
 <div class="app-header">
   <h1>🗳 選挙準備管理 v3</h1>
   <a class="back-link" href="list.html">← 一覧に戻る</a>
@@ -83,13 +105,20 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
     <div class="bulk-result" id="bulkResult"></div>
   </div>
 </div>
+<div class="content users-content">
+  <div class="form-card">
+    <div class="users-head">
+      <h2>利用者管理</h2>
+      <button type="button" class="small-btn" id="usersReloadBtn">↻ 読み直す</button>
+    </div>
+    <div class="form-message" id="usersMessage"></div>
+    <div id="usersList"><div class="loading">読み込み中...</div></div>
+  </div>
+</div>
 <script src="config.js"></script>
 <script src="prefectures.js"></script>
-<script>
-const v3Auth = sessionStorage.getItem('v3_auth');
-if(v3Auth !== '1' && v3Auth !== '2'){
-  location.href = 'index.html';
-}
+<script type="module">
+import { requirePageAccess, syncApi, usersApi, ROLE_LABELS } from './auth.js';
 
 const CODE_PATTERN = /^[A-Za-z0-9-]+$/;
 const SHEET_URL_PATTERN = /\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/;
@@ -133,21 +162,6 @@ PREFECTURES.forEach(pref => {
   prefectureSelect.appendChild(opt);
 });
 
-const WRITE_DISABLED_MESSAGE = '現在、セキュリティ対応のため画面からの登録・編集・削除を停止しています。必要な場合はシステム担当までご連絡ください。';
-
-async function edgeFetch(body){
-  const res = await fetch(`${SUPABASE_URL}/functions/v1/v3-sync-progress`, {
-    method: 'POST',
-    headers: {
-      'apikey': SUPABASE_KEY,
-      'Authorization': 'Bearer ' + SUPABASE_KEY,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
-  return res;
-}
-
 function showMessage(text, type){
   const el = document.getElementById('formMessage');
   el.textContent = text;
@@ -155,8 +169,6 @@ function showMessage(text, type){
 }
 
 async function submitCandidate(){
-  alert(WRITE_DISABLED_MESSAGE);
-  return;
   const codeInput = document.getElementById('candidateCode');
   const nameInput = document.getElementById('candidateName');
   const electionInput = document.getElementById('electionName');
@@ -186,7 +198,7 @@ async function submitCandidate(){
   showMessage('', '');
 
   try {
-    const res = await edgeFetch({
+    const res = await syncApi({
       action: 'createCandidate',
       candidate_code: code,
       name,
@@ -248,8 +260,6 @@ function renderBulkResult({ insertedCount, formatErrorEntries, duplicateEntries,
 }
 
 async function submitBulk(){
-  alert(WRITE_DISABLED_MESSAGE);
-  return;
   const textarea = document.getElementById('bulkText');
   const bulkSubmitBtn = document.getElementById('bulkSubmitBtn');
   const resultEl = document.getElementById('bulkResult');
@@ -313,7 +323,7 @@ async function submitBulk(){
   resultEl.innerHTML = '';
 
   try {
-    const res = await edgeFetch({
+    const res = await syncApi({
       action: 'createCandidate',
       candidates: candidateRows.map(row => ({
         candidate_code: row.candidate_code,
@@ -358,6 +368,193 @@ async function submitBulk(){
   } finally {
     bulkSubmitBtn.disabled = false;
   }
+}
+
+// ---------- 利用者管理 ----------
+
+let currentUser = null;
+const USER_GROUPS = [
+  { status: 'pending', label: '承認待ち', open: true },
+  { status: 'active', label: '有効', open: false },
+  { status: 'disabled', label: '無効', open: false }
+];
+// 読み直しても、開いているグループはそのままにする
+const openGroups = new Set(USER_GROUPS.filter(g => g.open).map(g => g.status));
+
+function showUsersMessage(text, type){
+  const el = document.getElementById('usersMessage');
+  el.textContent = text;
+  el.className = 'form-message' + (type ? ' ' + type : '');
+}
+
+function formatDateTime(value){
+  if(!value) return '-';
+  const d = new Date(value);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function node(tag, className, text){
+  const el = document.createElement(tag);
+  if(className) el.className = className;
+  if(text !== undefined) el.textContent = text;
+  return el;
+}
+
+function smallButton(label, className, onClick){
+  const btn = node('button', 'small-btn' + (className ? ' ' + className : ''), label);
+  btn.type = 'button';
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+function roleSelect(selected){
+  const select = document.createElement('select');
+  for(const role of ['viewer', 'admin']){
+    const opt = node('option', '', ROLE_LABELS[role]);
+    opt.value = role;
+    if(role === selected) opt.selected = true;
+    select.appendChild(opt);
+  }
+  return select;
+}
+
+async function loadUsers(){
+  const listEl = document.getElementById('usersList');
+  const reloadBtn = document.getElementById('usersReloadBtn');
+  reloadBtn.disabled = true;
+  try {
+    const { users } = await usersApi('list');
+    renderUsers(Array.isArray(users) ? users : []);
+  } catch (e) {
+    listEl.innerHTML = '';
+    listEl.appendChild(node('div', 'users-empty', e.message || '利用者一覧の取得に失敗しました'));
+  } finally {
+    reloadBtn.disabled = false;
+  }
+}
+
+function renderUsers(users){
+  const listEl = document.getElementById('usersList');
+  listEl.innerHTML = '';
+  for(const group of USER_GROUPS){
+    const members = users.filter(u => u.status === group.status);
+    const details = node('details', 'users-group');
+    details.open = openGroups.has(group.status);
+    details.addEventListener('toggle', () => {
+      if(details.open) openGroups.add(group.status); else openGroups.delete(group.status);
+    });
+    details.appendChild(node('summary', '', `${group.label}（${members.length}人）`));
+    const list = node('div', 'users-group-list');
+    if(members.length === 0){
+      list.appendChild(node('div', 'users-empty', 'いません'));
+    }
+    members.forEach(u => list.appendChild(createUserCard(u)));
+    details.appendChild(list);
+    listEl.appendChild(details);
+  }
+}
+
+function createUserCard(user){
+  const isSelf = currentUser && user.id === currentUser.id;
+  const card = node('div', 'user-card');
+
+  const name = node('div', 'user-card-name', user.display_name);
+  if(isSelf) name.appendChild(node('span', 'user-card-self', '（自分）'));
+  card.appendChild(name);
+
+  const meta = node('div', 'user-card-meta');
+  meta.append(
+    node('div', '', `メール：${user.email || '-'}`),
+    node('div', '', `役割：${ROLE_LABELS[user.role] || user.role}`),
+    node('div', '', `申請日時：${formatDateTime(user.created_at)}`),
+    node('div', '', `最終ログイン：${formatDateTime(user.last_login_at)}`)
+  );
+  card.appendChild(meta);
+
+  if(isSelf){
+    card.appendChild(node('div', 'user-card-note', '自分自身の無効化・役割変更・削除はできません'));
+    return card;
+  }
+
+  const actions = node('div', 'user-card-actions');
+  if(user.status === 'pending'){
+    const select = roleSelect('viewer');
+    actions.append(
+      select,
+      smallButton('承認する', 'primary', () => {
+        const role = select.value;
+        runUserAction({ action: 'approve', target_id: user.id, role }, `${user.display_name}さんを「${ROLE_LABELS[role]}」として承認しますか？`);
+      }),
+      smallButton('無効にする', '', () => runUserAction({ action: 'disable', target_id: user.id }, `${user.display_name}さんを無効にしますか？`)),
+      smallButton('削除', 'danger', () => deleteUser(user))
+    );
+  } else if(user.status === 'active'){
+    const select = roleSelect(user.role);
+    actions.append(
+      select,
+      smallButton('役割を変更', '', () => {
+        const role = select.value;
+        if(role === user.role){
+          showUsersMessage('役割が変わっていません', 'error');
+          return;
+        }
+        runUserAction({ action: 'set_role', target_id: user.id, role }, `${user.display_name}さんを「${ROLE_LABELS[role]}」にしますか？`);
+      }),
+      smallButton('無効にする', '', () => runUserAction({ action: 'disable', target_id: user.id }, `${user.display_name}さんを無効にしますか？`)),
+      smallButton('削除', 'danger', () => deleteUser(user))
+    );
+  } else {
+    actions.append(
+      smallButton('再有効化する', 'primary', () => runUserAction({ action: 'enable', target_id: user.id }, `${user.display_name}さんを再び使えるようにしますか？`)),
+      smallButton('削除', 'danger', () => deleteUser(user))
+    );
+  }
+  card.appendChild(actions);
+  return card;
+}
+
+async function runUserAction(payload, confirmMessage){
+  if(!confirm(confirmMessage)) return;
+  showUsersMessage('', '');
+  try {
+    await usersApi(payload.action, payload);
+    showUsersMessage('変更しました', 'success');
+  } catch (e) {
+    showUsersMessage(e.message, 'error');
+  }
+  await loadUsers();
+}
+
+async function deleteUser(user){
+  if(!confirm(`${user.display_name}さんを削除しますか？`)) return;
+  if(!confirm('元に戻せません。本当に削除しますか？')) return;
+  showUsersMessage('', '');
+  try {
+    const result = await usersApi('delete', { target_id: user.id });
+    if(result.warning){
+      alert(result.warning);
+      showUsersMessage(result.warning, 'error');
+    } else {
+      showUsersMessage('削除しました', 'success');
+    }
+  } catch (e) {
+    showUsersMessage(e.message, 'error');
+  }
+  await loadUsers();
+}
+
+document.getElementById('usersReloadBtn').addEventListener('click', () => {
+  showUsersMessage('', '');
+  loadUsers();
+});
+
+// HTML の onclick から呼ぶ関数（type="module" のスクリプトはグローバルにならないため）
+Object.assign(window, { submitCandidate, submitBulk });
+
+currentUser = await requirePageAccess({ adminOnly: true });
+if(currentUser){
+  loadUsers();
 }
 </script>
 </body>

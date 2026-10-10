@@ -27,9 +27,10 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
 .stage-doing{background:var(--doing);}
 .stage-done{background:var(--done);}
 .empty,.loading{color:var(--text3);font-size:13px;padding:40px 0;text-align:center;}
+body.auth-pending > *{visibility:hidden;}
 </style>
 </head>
-<body>
+<body class="auth-pending">
 <div class="app-header">
   <h1>🗳 選挙準備管理 v3</h1>
   <a class="back-link" href="list.html">← 一覧に戻る</a>
@@ -37,21 +38,11 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
 <div class="content" id="content"><div class="loading">読み込み中...</div></div>
 <script src="config.js"></script>
 <script src="status-map.js"></script>
-<script>
-const v3Auth = sessionStorage.getItem('v3_auth');
-if(v3Auth !== '1' && v3Auth !== '2'){
-  location.href = 'index.html';
-}
+<script type="module">
+import { requirePageAccess, getSupabase } from './auth.js';
 
 const STAGE_CLASS = { '未着手': 'stage-todo', '着手中': 'stage-doing', '納品完了': 'stage-done' };
 const PERIOD_ORDER = ['政治活動期間', '選挙期間'];
-
-async function sbFetch(path){
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-    headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
-  });
-  return res.json();
-}
 
 function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
@@ -67,11 +58,20 @@ async function render(){
     return;
   }
 
-  const [candidates, progress] = await Promise.all([
-    sbFetch(`v3_candidates?select=id,name,election_name&id=eq.${encodeURIComponent(candidateId)}`),
-    sbFetch(`v3_progress?select=item_name,period,required,status&candidate_id=eq.${encodeURIComponent(candidateId)}&order=sort_order.asc.nullslast`)
+  const supabase = getSupabase();
+  const [candidatesResult, progressResult] = await Promise.all([
+    supabase.from('v3_candidates').select('id,name,election_name').eq('id', candidateId),
+    supabase.from('v3_progress').select('item_name,period,required,status').eq('candidate_id', candidateId).order('sort_order', { ascending: true, nullsFirst: false })
   ]);
 
+  if(candidatesResult.error || progressResult.error){
+    console.error(candidatesResult.error || progressResult.error);
+    el.innerHTML = '<div class="empty">データの読み込みに失敗しました。ページを読み直してください</div>';
+    return;
+  }
+
+  const candidates = candidatesResult.data;
+  const progress = progressResult.data;
   const candidate = Array.isArray(candidates) ? candidates[0] : null;
   if(!candidate){
     el.innerHTML = '<div class="empty">候補者が見つかりません</div>';
@@ -120,7 +120,9 @@ async function render(){
   `;
 }
 
-render();
+if(await requirePageAccess()){
+  render();
+}
 </script>
 </body>
 </html>
