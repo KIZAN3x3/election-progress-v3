@@ -178,11 +178,26 @@ function renderList(prefecture){
   }).join('');
 }
 
+// Supabase は1回の取得で返す行数に上限（既定1000行）があるため、PAGE_SIZE ずつ繰り返して全件取る。
+// サーバー側の上限が PAGE_SIZE より小さくても取りこぼさないよう、実際に返った件数だけ進め、0件で終わる。
+// 順番が変わると取りこぼし・重複が起きるので、buildQuery には一意に決まる order を付けること
+const PAGE_SIZE = 1000;
+
+async function fetchAllRows(buildQuery){
+  const rows = [];
+  for(;;){
+    const { data, error } = await buildQuery().range(rows.length, rows.length + PAGE_SIZE - 1);
+    if(error) return { data: null, error };
+    if(!data || data.length === 0) return { data: rows, error: null };
+    rows.push(...data);
+  }
+}
+
 async function render(){
   const supabase = getSupabase();
   const [candidatesResult, progressResult] = await Promise.all([
-    supabase.from('v3_candidates').select('id,candidate_code,name,election_name,prefecture,sheet_id,last_updated_at').order('name', { ascending: true }),
-    supabase.from('v3_progress').select('candidate_id,status')
+    fetchAllRows(() => supabase.from('v3_candidates').select('id,candidate_code,name,election_name,prefecture,sheet_id,last_updated_at').order('name', { ascending: true }).order('id', { ascending: true })),
+    fetchAllRows(() => supabase.from('v3_progress').select('candidate_id,status').order('id', { ascending: true }))
   ]);
 
   if(candidatesResult.error || progressResult.error){
