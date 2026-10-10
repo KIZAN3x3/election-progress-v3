@@ -7,51 +7,83 @@
 <style>
 :root{--bg:#ffffff;--accent:#f77f00;--accent2:#e05c00;--text:#1a1a1a;--text2:#5c5650;--text3:#8c8478;--surface:#f5f5f5;--surface2:#ececec;--border:#ddd9d0;--danger:#e74c3c;--radius:12px;--radius-sm:8px;}
 *{box-sizing:border-box;margin:0;padding:0;}
-body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sans JP',sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;}
+body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sans JP',sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;}
 .login-box{background:var(--surface);border-radius:var(--radius);padding:40px;width:100%;max-width:380px;text-align:center;}
 .logo{font-size:28px;font-weight:800;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:6px;}
 .sub{color:var(--text3);font-size:13px;margin-bottom:28px;}
-.form-group{margin-bottom:16px;text-align:left;}
-.form-group label{display:block;font-size:12px;color:var(--text3);margin-bottom:6px;font-weight:600;}
-.form-group input{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);padding:10px 12px;font-size:14px;font-family:inherit;outline:none;}
-.form-group input:focus{border-color:var(--accent);}
-.btn{padding:12px 20px;border-radius:var(--radius-sm);font-size:14px;font-weight:700;cursor:pointer;border:none;transition:all .15s;width:100%;background:var(--accent);color:white;}
+.btn{padding:12px 20px;border-radius:var(--radius-sm);font-size:14px;font-weight:700;cursor:pointer;border:none;transition:all .15s;width:100%;background:var(--accent);color:white;font-family:inherit;}
 .btn:hover{background:var(--accent2);}
+.btn:disabled{opacity:.6;cursor:not-allowed;}
 .login-error{color:var(--danger);font-size:13px;margin-top:10px;min-height:16px;}
+.inapp-notice{background:#fff1e3;color:var(--accent2);font-size:12px;line-height:1.7;border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:16px;text-align:left;}
+.privacy-link{margin-top:20px;font-size:12px;}
+.privacy-link a{color:var(--text3);}
+.privacy-link a:hover{color:var(--accent2);}
+[hidden]{display:none !important;}
 </style>
 </head>
 <body>
-<div class="login-box">
+<div class="login-box" id="loginBox">
   <div class="logo">🗳 選挙準備管理 v3</div>
-  <div class="sub">パスワードを入力してください</div>
-  <div class="form-group">
-    <label>パスワード</label>
-    <input type="password" id="pw" placeholder="パスワードを入力" onkeydown="if(event.key==='Enter')login()">
+  <div class="sub" id="loginSub">ログイン状態を確認しています...</div>
+  <div class="inapp-notice" id="inAppNotice" hidden>
+    LINE やチャットワークなどのアプリ内ブラウザでは、Google でログインできません。<br>
+    このページを Safari か Chrome で開いてください。
   </div>
-  <button class="btn" onclick="login()">ログイン</button>
+  <button class="btn" id="googleLoginBtn" type="button" hidden>Google でログイン</button>
   <div class="login-error" id="loginError"></div>
 </div>
-<script>
-const ADMIN_HASH = 'f4f8997560b63a0ccde82ac8ee3acc2c4a6ab17cfb372b489de6684b0b31e910';
-const VIEWER_HASH = '21bbd7e965eacf9d59f95980de57482a0d93147ab3b27b0e30d9b3191c62cc6e';
-async function sha256Hex(text){
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+<div class="privacy-link"><a href="privacy.html">プライバシーポリシー</a></div>
+<script src="config.js"></script>
+<script type="module">
+import { loadAccount, startGoogleLogin, showAccountGate, isInAppBrowser, takeLoginMessage, safeNextPage } from './auth.js';
+
+const loginSub = document.getElementById('loginSub');
+const loginBtn = document.getElementById('googleLoginBtn');
+const loginError = document.getElementById('loginError');
+
+function showLoginButton(message){
+  loginSub.textContent = 'Google アカウントでログインしてください';
+  loginBtn.hidden = false;
+  if(isInAppBrowser()) document.getElementById('inAppNotice').hidden = false;
+  loginError.textContent = message || '';
 }
-async function login(){
-  const pw = await sha256Hex(document.getElementById('pw').value);
-  if(pw === ADMIN_HASH){
-    sessionStorage.setItem('v3_auth', '1');
-    location.href = 'list.html';
+
+loginBtn.addEventListener('click', async () => {
+  loginBtn.disabled = true;
+  loginError.textContent = '';
+  try {
+    await startGoogleLogin(); // 成功すると Google の画面へ移動する
+  } catch (e) {
+    console.error(e);
+    loginError.textContent = 'Googleログインを開始できませんでした。時間をおいて再度お試しください';
+    loginBtn.disabled = false;
+  }
+});
+
+async function init(){
+  const savedMessage = takeLoginMessage();
+  let result;
+  try {
+    result = await loadAccount();
+  } catch (e) {
+    console.error(e);
+    showLoginButton('ログイン状態を確認できませんでした。時間をおいて再度お試しください');
     return;
   }
-  if(pw === VIEWER_HASH){
-    sessionStorage.setItem('v3_auth', '2');
-    location.href = 'list.html';
+
+  if(!result.account){
+    showLoginButton(result.message || savedMessage);
     return;
   }
-  document.getElementById('loginError').textContent = 'パスワードが違います';
+  if(result.account.status === 'active'){
+    location.replace(safeNextPage());
+    return;
+  }
+  showAccountGate(result.account);
 }
+
+init();
 </script>
 </body>
 </html>
