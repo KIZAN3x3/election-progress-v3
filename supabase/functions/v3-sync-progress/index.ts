@@ -1,6 +1,7 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { corsHeaders, withCors } from "../_shared/cors.ts";
 import { getAuthContext, requireAdmin } from "../_shared/auth.ts";
+import { type ExistingProgressRow, planOrphanCleanup } from "./cleanup.ts";
 
 interface ProgressItem {
   item_name: string;
@@ -31,6 +32,8 @@ interface SyncRequestBody {
   items?: ProgressItem[];
   records?: SyncRecord[];
   modifiedTime?: string;
+  // true = records が候補者のシート全体（全 period）。このときだけ、records に無い period の行を掃除する
+  fullSheet?: boolean;
   // createCandidate (single or bulk)
   name?: string;
   election_name?: string;
@@ -261,6 +264,16 @@ async function handle(req: Request): Promise<Response> {
 
   const results: Array<{ candidate_code: string; status: string; synced?: number; deleted?: number; changed?: boolean; error?: string }> = [];
   const candidateSyncOk = new Map<string, boolean>();
+  // 見出しの掃除用：候補者コード → id と、受け取った period・項目数
+  const candidateIdByCode = new Map<string, string>();
+  const receivedByCode = new Map<string, { periods: Set<string>; itemCount: number }>();
+  for (const record of records) {
+    if (!record.candidate_code || !record.period || !Array.isArray(record.items)) continue;
+    const received = receivedByCode.get(record.candidate_code) ?? { periods: new Set<string>(), itemCount: 0 };
+    received.periods.add(record.period);
+    received.itemCount += record.items.length;
+    receivedByCode.set(record.candidate_code, received);
+  }
 
   for (const record of records) {
     const { candidate_code, period, items } = record;
@@ -285,6 +298,7 @@ async function handle(req: Request): Promise<Response> {
       results.push({ candidate_code, status: "not_found" });
       continue;
     }
+    candidateIdByCode.set(candidate_code, candidate.id);
 
     const itemNameSet = new Set(items.map((item) => item.item_name));
 
@@ -375,6 +389,22 @@ async function handle(req: Request): Promise<Response> {
     results.push({ candidate_code, status: "ok", synced: syncedCount, deleted: staleNames.length, changed: hasChange });
   }
 
+  // シートから消えた見出し（period）の行の掃除。シート全体を受け取ったとき（fullSheet: true）だけ、
+  // その候補者のすべての record の upsert が成功したあとに行う
+  const cleanup: CleanupResult[] = [];
+  if (body.fullSheet === true) {
+    for (const [candidateCode, received] of receivedByCode) {
+      const candidateId = candidateIdByCode.get(candidateCode);
+      if (!candidateId) continue;
+      if (candidateSyncOk.get(candidateId) !== true) {
+        cleanup.push({ candidate_code: candidateCode, deleted: [], skipped: "同期に失敗した period があるため掃除しません" });
+        continue;
+      }
+      const result = await cleanupOrphanPeriods(candidateCode, candidateId, received.periods, received.itemCount);
+      if (result) cleanup.push(result);
+    }
+  }
+
   if (body.modifiedTime) {
     const idsToUpdate = [...candidateSyncOk.entries()]
       .filter(([, ok]) => ok)
@@ -393,7 +423,72 @@ async function handle(req: Request): Promise<Response> {
   }
 
   const hasError = results.some((r) => r.status === "error");
-  return jsonResponse({ results }, hasError ? 207 : 200);
+  return jsonResponse(cleanup.length > 0 ? { results, cleanup } : { results }, hasError ? 207 : 200);
+}
+
+interface CleanupResult {
+  candidate_code: string;
+  deleted: Array<{ candidate_code: string; period: string; item_name: string; status: string | null }>;
+  skipped?: string;
+  warning?: string;
+  error?: string;
+}
+
+// 1候補者分の掃除。何もすることが無ければ null
+async function cleanupOrphanPeriods(
+  candidateCode: string,
+  candidateId: string,
+  receivedPeriods: Set<string>,
+  receivedItemCount: number,
+): Promise<CleanupResult | null> {
+  const { data: existingRows, error: existingError } = await supabase
+    .from("v3_progress")
+    .select("id, period, item_name, status")
+    .eq("candidate_id", candidateId);
+  if (existingError) {
+    console.error(`[cleanup] ${candidateCode}: 現在の行の取得に失敗: ${existingError.message}`);
+    return { candidate_code: candidateCode, deleted: [], error: existingError.message };
+  }
+
+  const plan = planOrphanCleanup((existingRows ?? []) as ExistingProgressRow[], receivedPeriods, receivedItemCount);
+  if (plan.action === "none") return null;
+
+  if (plan.action === "skip") {
+    if (plan.warning) {
+      const periods = [...new Set(plan.rows.map((r) => r.period))].join(", ");
+      console.warn(`[cleanup] ${candidateCode}: ${plan.reason}（対象の見出し: ${periods}）`);
+      return { candidate_code: candidateCode, deleted: [], warning: `${plan.reason}（対象の見出し: ${periods}）` };
+    }
+    return { candidate_code: candidateCode, deleted: [], skipped: plan.reason };
+  }
+
+  const { data: deletedRows, error: deleteError } = await supabase
+    .from("v3_progress")
+    .delete()
+    .eq("candidate_id", candidateId)
+    .in("id", plan.rows.map((r) => r.id))
+    .select("period, item_name, status");
+  if (deleteError) {
+    console.error(`[cleanup] ${candidateCode}: 削除に失敗: ${deleteError.message}`);
+    return { candidate_code: candidateCode, deleted: [], error: deleteError.message };
+  }
+
+  const deleted = (deletedRows ?? []).map((r) => ({
+    candidate_code: candidateCode,
+    period: r.period as string,
+    item_name: r.item_name as string,
+    status: r.status as string | null,
+  }));
+  console.log(`[cleanup] ${candidateCode}: シートから消えた見出しの行を ${deleted.length} 件削除: ${JSON.stringify(deleted)}`);
+
+  if (deleted.length > 0) {
+    const { error: touchError } = await supabase
+      .from("v3_candidates")
+      .update({ last_updated_at: new Date().toISOString() })
+      .eq("id", candidateId);
+    if (touchError) console.error(`[cleanup] ${candidateCode}: last_updated_at の更新に失敗: ${touchError.message}`);
+  }
+  return { candidate_code: candidateCode, deleted };
 }
 
 Deno.serve(async (req) => {
