@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "node --disable-warning=ExperimentalWarning --test scripts/*.test.mjs supabase/functions/_shared/*.test.mjs",
     "sync-sheets": "node scripts/sync-sheets.mjs"
   },
   "dependencies": {

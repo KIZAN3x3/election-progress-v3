@@ -1,6 +1,7 @@
-import { createClient, type User } from "jsr:@supabase/supabase-js@2";
+import { createClient, type User } from "jsr:@supabase/supabase-js@2.117.3";
 import { corsHeaders, withCors } from "../_shared/cors.ts";
 import { getAuthContext, requireAdmin, V3_USER_COLUMNS, type V3User } from "../_shared/auth.ts";
+import { getBackendKey } from "../_shared/backend-key.ts";
 
 // Googleログインの利用者（v3_users）に関する API。POST の body の action で分岐する。
 //   me       : 自分の状態（unregistered / pending / active / disabled）
@@ -17,9 +18,9 @@ import { getAuthContext, requireAdmin, V3_USER_COLUMNS, type V3User } from "../_
 // 更新は「判定に使った status・role」を条件に入れ、判定のあとで変わっていたら 409 を返す。
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const BACKEND_KEY = getBackendKey((name) => Deno.env.get(name));
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+const supabase = createClient(SUPABASE_URL, BACKEND_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 

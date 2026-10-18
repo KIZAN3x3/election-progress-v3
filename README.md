@@ -74,10 +74,12 @@ Supabase プロジェクトや公開 URL を変えるときは、次をすべて
 | URL Configuration | Supabase → Authentication → URL Configuration | Site URL: `https://kizan3x3.github.io/election-progress-v3/`。Redirect URLs: `https://kizan3x3.github.io/election-progress-v3/**`、ローカル確認用に `http://localhost:5500/**` |
 | CORS の許可元 | `supabase/functions/_shared/cors.ts` | 公開 URL のオリジンを変えたら書き換えて、両方の Edge Function を再デプロイ |
 | `config.js` | リポジトリ | Supabase の URL と publishable key |
-| Edge Function の secret | Supabase → Edge Functions → Secrets | `V3_SYNC_TOKEN`（`SUPABASE_URL`・`SUPABASE_SERVICE_ROLE_KEY` は自動で入る） |
+| Edge Function の secret | Supabase → Edge Functions → Secrets | `V3_SYNC_TOKEN`、移行時の`V3_BACKEND_KEY_NAME`。APIキー辞書はSupabaseが自動注入する |
 | GitHub Secrets | GitHub → Settings → Secrets and variables → Actions | `V3_SYNC_TOKEN`、`SUPABASE_SECRET_KEY`、`GOOGLE_SERVICE_ACCOUNT_KEY_B64`（または `GOOGLE_SERVICE_ACCOUNT_KEY`） |
 | ワークフローの publishable key | `.github/workflows/sync-sheets.yml` | `SUPABASE_KEY` |
 | Apps Script のスクリプトプロパティ | 各 Apps Script プロジェクト | `GITHUB_PAT`（`dispatch-trigger.gs`）。`V3_SYNC_TOKEN` は置かない方針 |
+
+管理用キーは明示した名前の新secretへ切り替えられます。selector未設定時だけlegacyキーを使うため、旧APIキーの停止前に`V3_BACKEND_KEY_NAME`の設定と両Functionの動作確認が必須です。[サーバー資格情報の切替手順](docs/server-credential-rotation.md)を参照してください。
 
 ### Edge Function のデプロイ
 
