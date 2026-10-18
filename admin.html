@@ -115,10 +115,10 @@ body.auth-pending > *{visibility:hidden;}
     <div id="usersList"><div class="loading">読み込み中...</div></div>
   </div>
 </div>
-<script src="config.js"></script>
+<script src="config.js?v=public-config-1"></script>
 <script src="prefectures.js"></script>
 <script type="module">
-import { requirePageAccess, syncApi, usersApi, ROLE_LABELS } from './auth.js';
+import { requirePageAccess, syncApi, usersApi, ROLE_LABELS } from './auth.js?v=public-config-1';
 
 const CODE_PATTERN = /^[A-Za-z0-9-]+$/;
 const SHEET_URL_PATTERN = /\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/;
