@@ -215,7 +215,7 @@ async function syncOneCandidate(sheetsApi, candidate, modifiedTime) {
         method: "POST",
         headers: {
           "Content-Type": "application/json; charset=utf-8",
-          Authorization: `Bearer ${SUPABASE_KEY}`,
+          apikey: SUPABASE_KEY,
         },
         // fullSheet: シートの全 period を送っているので、シートから消えた見出しの行を掃除してよい
         body: JSON.stringify({ token: SYNC_TOKEN, records, modifiedTime, fullSheet: true }),
