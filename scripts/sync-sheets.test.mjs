@@ -45,7 +45,10 @@ export const google = {
       scenario === "missing-code" ? "" : scenario === "mismatch" ? marker("wrong_code") : candidate.candidate_code,
     ]] } };
     if (range !== "広報物一覧・進捗確認ページ") throw new Error("Unexpected fixture range");
-    return { data: { values: scenario === "no-items" ? [] : [
+    return { data: { values: scenario === "no-items" ? [] : scenario === "reserved-periods" ?
+      ["__proto__", "constructor", "toString"].flatMap((period) => [
+        ["", "【" + period + "】", "", ""], ["", marker("item"), "必要", marker("progress")],
+      ]) : [
       ["", "【" + marker("period") + "】", "", ""],
       ["", marker("item"), "必要", marker("progress")],
     ] } };
@@ -81,7 +84,7 @@ globalThis.fetch = async (url, options = {}) => {
     (scenario === "majority-failed" && code !== candidates[2].candidate_code);
   return Response.json({
     cleanup: [{ candidate_code: code, deleted: [{ period: marker("period"), item_name: marker("deleted_item"), status: marker("deleted_status") }],
-      warning: marker("warning"), error: marker("cleanup_error") }],
+      warning: marker("warning"), ...(scenario === "cleanup-error" ? { error: marker("cleanup_error") } : {}) }],
     results: [{ status: failed ? "error" : "ok", candidate_code: code, error: marker("result_detail") }],
   });
 };
@@ -133,7 +136,7 @@ test("successful sync keeps payloads and counts while hiding personal data and c
   assert.match(result.output, /成功: 1件 \/ 失敗: 0件 \/ スキップ: 0件/);
   assert.match(result.output, /見出しの掃除: 1件削除/);
   assert.match(result.output, /見出しの掃除（警告）: 1件/);
-  assert.match(result.output, /見出しの掃除（エラー）: 1件/);
+  assert.doesNotMatch(result.output, /見出しの掃除（エラー）/);
   const read = result.requests.find((r) => r.path === "/rest/v1/v3_candidates");
   assert.ok(read);
   assert.ok(!read.select.split(",").includes("name"), "names are no longer needed for synchronization");
@@ -151,7 +154,7 @@ test("successful sync keeps payloads and counts while hiding personal data and c
 for (const [scenario, expected] of [
   ["sheets-error", "EXTERNAL_ERROR（HTTP 503）"], ["unsafe-status", "EXTERNAL_ERROR"],
   ["sync-http-error", "SYNC_REQUEST_FAILED（HTTP 403）"], ["temporary-error", "SYNC_REQUEST_FAILED（HTTP 200）"],
-  ["invalid-json", "INVALID_SYNC_RESPONSE"], ["result-error", "SYNC_RESULT_ERROR"], ["timeout", "SYNC_TIMEOUT"],
+  ["invalid-json", "INVALID_SYNC_RESPONSE"], ["result-error", "SYNC_RESULT_ERROR"], ["cleanup-error", "SYNC_CLEANUP_FAILED"], ["timeout", "SYNC_TIMEOUT"],
   ["missing-code", "CANDIDATE_CODE_MISSING"], ["mismatch", "CANDIDATE_CODE_MISMATCH"], ["no-items", "NO_PROGRESS_ITEMS"],
 ]) {
   test(`${scenario} hides sensitive details and retains a safe failure category`, () => {
@@ -165,6 +168,15 @@ for (const [scenario, expected] of [
     }
   });
 }
+
+test("reserved period headings generate normal sync records without prototype collisions", () => {
+  const result = runScenario("reserved-periods");
+  assertPrivate(result);
+  assert.equal(result.status, 0, result.output);
+  const write = result.requests.find((request) => request.path === "/functions/v1/v3-sync-progress");
+  assert.deepEqual(write.body.records.map((record) => record.period), ["__proto__", "constructor", "toString"]);
+  assert(write.body.records.every((record) => record.items.length === 1 && record.items[0].item_name === canary + "_item"));
+});
 
 for (const [scenario, expected] of [
   ["candidate-http-error", "CANDIDATES_FETCH_FAILED（HTTP 403）"], ["candidate-network-error", "EXTERNAL_ERROR（HTTP 503）"],

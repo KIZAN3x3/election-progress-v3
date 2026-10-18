@@ -31,7 +31,7 @@ interface SyncRequestBody {
   period?: string;
   items?: ProgressItem[];
   records?: SyncRecord[];
-  modifiedTime?: string;
+  modifiedTime?: string | null;
   // true = records が候補者のシート全体（全 period）。このときだけ、records に無い period の行を掃除する
   fullSheet?: boolean;
   // createCandidate (single or bulk)
@@ -68,6 +68,38 @@ function jsonResponse(body: unknown, status: number) {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+// Validate the entire sync before its first DB read/write. A malformed later
+// record must not leave earlier records applied or reach destructive cleanup.
+function validatedSyncRecords(body: SyncRequestBody): SyncRecord[] | null {
+  if (body.fullSheet !== undefined && typeof body.fullSheet !== "boolean") return null;
+  if (body.modifiedTime != null && (typeof body.modifiedTime !== "string" ||
+      !body.modifiedTime || !Number.isFinite(Date.parse(body.modifiedTime)))) return null;
+  const records: unknown = body.records !== undefined ? body.records :
+    [{ candidate_code: body.candidate_code, period: body.period, items: body.items }];
+  if (!Array.isArray(records) || records.length === 0) return null;
+  const seenPeriods = new Set<string>();
+  for (const record of records) {
+    if (!isObject(record) || typeof record.candidate_code !== "string" || !record.candidate_code.trim() ||
+        typeof record.period !== "string" || record.period.length === 0 ||
+        !Array.isArray(record.items) || record.items.length === 0) return null;
+    const periodKey = JSON.stringify([record.candidate_code, record.period]);
+    if (seenPeriods.has(periodKey)) return null;
+    seenPeriods.add(periodKey);
+    const seenItems = new Set<string>();
+    for (const item of record.items) {
+      if (!isObject(item) || typeof item.item_name !== "string" || !item.item_name.trim() ||
+          typeof item.status !== "string" ||
+          (item.required !== undefined && typeof item.required !== "boolean") || seenItems.has(item.item_name)) return null;
+      seenItems.add(item.item_name);
+    }
+  }
+  return records as SyncRecord[];
 }
 
 async function handleCreateCandidate(body: SyncRequestBody) {
@@ -217,8 +249,12 @@ async function handle(req: Request): Promise<Response> {
   } catch {
     return jsonResponse({ error: "invalid json body" }, 400);
   }
+  if (!isObject(body)) return jsonResponse({ error: "invalid json body" }, 400);
 
-  const action = body.action ?? "sync";
+  const action = body.action === undefined ? "sync" : body.action;
+  if (typeof action !== "string" || ![...ADMIN_ACTIONS, "sync"].includes(action)) {
+    return jsonResponse({ error: "invalid action" }, 400);
+  }
 
   if (ADMIN_ACTIONS.includes(action)) {
     const admin = requireAdmin(await getAuthContext(supabase, req));
@@ -242,21 +278,12 @@ async function handle(req: Request): Promise<Response> {
     return await handleUpdateCandidate(body);
   }
 
-  if (action !== "sync") {
-    return jsonResponse({ error: `unknown action: ${action}` }, 400);
-  }
-
-  const records: SyncRecord[] = body.records ??
-    (body.candidate_code && body.period && body.items
-      ? [{ candidate_code: body.candidate_code, period: body.period, items: body.items }]
-      : []);
-
-  if (records.length === 0) {
-    return jsonResponse({ error: "no records to sync" }, 400);
-  }
+  const records = validatedSyncRecords(body);
+  if (!records) return jsonResponse({ error: "invalid sync payload" }, 400);
 
   const results: Array<{ candidate_code: string; status: string; synced?: number; deleted?: number; changed?: boolean; error?: string }> = [];
   const candidateSyncOk = new Map<string, boolean>();
+  const failedCandidateCodes = new Set<string>();
   // 見出しの掃除用：候補者コード → id と、受け取った period・項目数
   const candidateIdByCode = new Map<string, string>();
   const receivedByCode = new Map<string, { periods: Set<string>; itemCount: number }>();
@@ -283,11 +310,13 @@ async function handle(req: Request): Promise<Response> {
       .maybeSingle();
 
     if (candidateError) {
+      failedCandidateCodes.add(candidate_code);
       results.push({ candidate_code, status: "error", error: candidateError.message });
       continue;
     }
 
     if (!candidate) {
+      failedCandidateCodes.add(candidate_code);
       results.push({ candidate_code, status: "not_found" });
       continue;
     }
@@ -302,6 +331,7 @@ async function handle(req: Request): Promise<Response> {
       .eq("period", period);
 
     if (existingError) {
+      failedCandidateCodes.add(candidate_code);
       candidateSyncOk.set(candidate.id, false);
       results.push({ candidate_code, status: "error", error: existingError.message });
       continue;
@@ -324,21 +354,6 @@ async function handle(req: Request): Promise<Response> {
       }
     }
 
-    if (staleNames.length > 0) {
-      const { error: deleteError } = await supabase
-        .from("v3_progress")
-        .delete()
-        .eq("candidate_id", candidate.id)
-        .eq("period", period)
-        .in("item_name", staleNames);
-
-      if (deleteError) {
-        candidateSyncOk.set(candidate.id, false);
-        results.push({ candidate_code, status: "error", error: deleteError.message });
-        continue;
-      }
-    }
-
     let syncedCount = 0;
     if (items.length > 0) {
       const rows = items.map((item, index) => ({
@@ -356,11 +371,28 @@ async function handle(req: Request): Promise<Response> {
         .upsert(rows, { onConflict: "candidate_id,period,item_name" });
 
       if (upsertError) {
+        failedCandidateCodes.add(candidate_code);
         candidateSyncOk.set(candidate.id, false);
         results.push({ candidate_code, status: "error", error: upsertError.message });
         continue;
       }
       syncedCount = rows.length;
+    }
+
+    // Persist the replacement first. If it fails, existing progress stays intact.
+    if (staleNames.length > 0) {
+      const { error: deleteError } = await supabase
+        .from("v3_progress")
+        .delete()
+        .eq("candidate_id", candidate.id)
+        .eq("period", period)
+        .in("item_name", staleNames);
+      if (deleteError) {
+        failedCandidateCodes.add(candidate_code);
+        candidateSyncOk.set(candidate.id, false);
+        results.push({ candidate_code, status: "error", error: deleteError.message });
+        continue;
+      }
     }
 
     if (hasChange) {
@@ -370,6 +402,7 @@ async function handle(req: Request): Promise<Response> {
         .eq("id", candidate.id);
 
       if (touchError) {
+        failedCandidateCodes.add(candidate_code);
         candidateSyncOk.set(candidate.id, false);
         results.push({ candidate_code, status: "error", error: touchError.message });
         continue;
@@ -389,19 +422,23 @@ async function handle(req: Request): Promise<Response> {
     for (const [candidateCode, received] of receivedByCode) {
       const candidateId = candidateIdByCode.get(candidateCode);
       if (!candidateId) continue;
-      if (candidateSyncOk.get(candidateId) !== true) {
+      if (failedCandidateCodes.has(candidateCode) || candidateSyncOk.get(candidateId) !== true) {
         cleanup.push({ candidate_code: candidateCode, deleted: [], skipped: "同期に失敗した period があるため掃除しません" });
         continue;
       }
       const result = await cleanupOrphanPeriods(candidateCode, candidateId, received.periods, received.itemCount);
       if (result) cleanup.push(result);
+      if (result?.error) {
+        failedCandidateCodes.add(candidateCode);
+        candidateSyncOk.set(candidateId, false);
+      }
     }
   }
 
   if (body.modifiedTime) {
-    const idsToUpdate = [...candidateSyncOk.entries()]
-      .filter(([, ok]) => ok)
-      .map(([id]) => id);
+    const idsToUpdate = [...candidateIdByCode.entries()]
+      .filter(([candidateCode, id]) => !failedCandidateCodes.has(candidateCode) && candidateSyncOk.get(id) === true)
+      .map(([, id]) => id);
 
     if (idsToUpdate.length > 0) {
       const { error: modifiedAtError } = await supabase
@@ -415,7 +452,7 @@ async function handle(req: Request): Promise<Response> {
     }
   }
 
-  const hasError = results.some((r) => r.status === "error");
+  const hasError = results.some((r) => r.status === "error") || cleanup.some((r) => !!r.error);
   return jsonResponse(cleanup.length > 0 ? { results, cleanup } : { results }, hasError ? 207 : 200);
 }
 

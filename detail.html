@@ -78,7 +78,8 @@ async function render(){
     return;
   }
 
-  const byPeriod = {};
+  // シートの見出しが __proto__ などでも通常の期間名として扱う。
+  const byPeriod = Object.create(null);
   (progress || []).forEach(p => {
     if(!byPeriod[p.period]) byPeriod[p.period] = [];
     byPeriod[p.period].push(p);
