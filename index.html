@@ -37,6 +37,7 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
 <script src="config.js"></script>
 <script type="module">
 import { loadAccount, startGoogleLogin, showAccountGate, isInAppBrowser, takeLoginMessage, safeNextPage } from './auth.js';
+import { assignedPrefecture } from './prefecture-scope.js';
 
 const loginSub = document.getElementById('loginSub');
 const loginBtn = document.getElementById('googleLoginBtn');
@@ -76,7 +77,7 @@ async function init(){
     showLoginButton(result.message || savedMessage);
     return;
   }
-  if(result.account.status === 'active'){
+  if(result.account.status === 'active' && assignedPrefecture(result.account.user)){
     location.replace(safeNextPage());
     return;
   }

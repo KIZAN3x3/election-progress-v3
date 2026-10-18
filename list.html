@@ -110,9 +110,11 @@ body.auth-pending > *{visibility:hidden;}
 <script src="prefectures.js"></script>
 <script type="module">
 import { requirePageAccess, getSupabase, syncApi } from './auth.js';
+import { assignedPrefecture, candidateInScope, candidatesInScope, setPrefectureSelect } from './prefecture-scope.js';
 
 // 管理者だけに「候補者を登録」・編集・削除を出す（本当の判定は Edge Function 側）
 let isAdmin = false;
+let currentUser = null;
 
 let allCandidates = [];
 let statsByCandidate = {};
@@ -128,21 +130,9 @@ function extractSheetId(input){
 }
 
 const prefectureFilter = document.getElementById('prefectureFilter');
-PREFECTURES.forEach(pref => {
-  const opt = document.createElement('option');
-  opt.value = pref;
-  opt.textContent = pref;
-  prefectureFilter.appendChild(opt);
-});
 prefectureFilter.addEventListener('change', () => renderList(prefectureFilter.value));
 
 const editPrefectureSelect = document.getElementById('editPrefecture');
-PREFECTURES.forEach(pref => {
-  const opt = document.createElement('option');
-  opt.value = pref;
-  opt.textContent = pref;
-  editPrefectureSelect.appendChild(opt);
-});
 
 function renderList(prefecture){
   const el = document.getElementById('candidateList');
@@ -152,7 +142,8 @@ function renderList(prefecture){
     return;
   }
 
-  const filtered = prefecture ? allCandidates.filter(c => c.prefecture === prefecture) : allCandidates;
+  const filtered = candidatesInScope(allCandidates, currentUser)
+    .filter(c => !prefecture || c.prefecture.replace(/^ +| +$/g, '') === prefecture);
 
   if(filtered.length === 0){
     el.innerHTML = '<div class="empty">該当する候補者がいません</div>';
@@ -208,7 +199,7 @@ async function render(){
 
   const candidates = candidatesResult.data;
   const progress = progressResult.data;
-  allCandidates = Array.isArray(candidates) ? candidates : [];
+  allCandidates = candidatesInScope(candidates, currentUser);
 
   statsByCandidate = {};
   (progress || []).forEach(p => {
@@ -235,7 +226,7 @@ function escapeHtml(str){
 
 async function deleteCandidate(id){
   const candidate = allCandidates.find(c => c.id === id);
-  if(!candidate) return;
+  if(!isAdmin || !candidateInScope(candidate, currentUser)) return;
 
   if(!confirm(`本当に削除しますか？（${candidate.name}）`)) return;
 
@@ -253,13 +244,13 @@ let editingCandidateId = null;
 
 function openEditModal(id){
   const candidate = allCandidates.find(c => c.id === id);
-  if(!candidate) return;
+  if(!isAdmin || !candidateInScope(candidate, currentUser)) return;
 
   editingCandidateId = id;
   document.getElementById('editCandidateCode').value = candidate.candidate_code || '';
   document.getElementById('editCandidateName').value = candidate.name || '';
   document.getElementById('editElectionName').value = candidate.election_name || '';
-  editPrefectureSelect.value = candidate.prefecture || '';
+  setPrefectureSelect(editPrefectureSelect, currentUser);
   document.getElementById('editSheetId').value = candidate.sheet_id || '';
   document.getElementById('editMessage').textContent = '';
   document.getElementById('editMessage').className = 'form-message';
@@ -278,7 +269,8 @@ function showEditMessage(text, type){
 }
 
 async function saveEdit(){
-  if(!editingCandidateId) return;
+  const candidate = allCandidates.find(c => c.id === editingCandidateId);
+  if(!isAdmin || !candidateInScope(candidate, currentUser)) return;
 
   const name = document.getElementById('editCandidateName').value.trim();
   const election = document.getElementById('editElectionName').value.trim();
@@ -288,6 +280,10 @@ async function saveEdit(){
 
   if(!name || !election || !prefecture){
     showEditMessage('すべての項目を入力してください', 'error');
+    return;
+  }
+  if(prefecture !== assignedPrefecture(currentUser)){
+    showEditMessage('担当する都道府県の候補者だけ更新できます', 'error');
     return;
   }
   if(sheetId === MASTER_SHEET_ID){
@@ -328,11 +324,14 @@ Object.assign(window, { openEditModal, closeEditModal, saveEdit, deleteCandidate
 
 const user = await requirePageAccess();
 if(user){
+  currentUser = user;
+  setPrefectureSelect(prefectureFilter, user);
+  setPrefectureSelect(editPrefectureSelect, user);
   isAdmin = user.role === 'admin';
   if(isAdmin){
     document.getElementById('registerLink').style.display = '';
   }
-  render();
+  await render();
 }
 </script>
 </body>

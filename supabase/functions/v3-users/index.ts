@@ -1,6 +1,7 @@
-import { createClient, type User } from "jsr:@supabase/supabase-js@2";
+import { createClient, type User } from "jsr:@supabase/supabase-js@2.117.3";
 import { corsHeaders, withCors } from "../_shared/cors.ts";
 import { getAuthContext, requireAdmin, V3_USER_COLUMNS, type V3User } from "../_shared/auth.ts";
+import { callScopedRpc, isObject, isUuid } from "../_shared/scoped-rpc.ts";
 
 // Googleログインの利用者（v3_users）に関する API。POST の body の action で分岐する。
 //   me       : 自分の状態（unregistered / pending / active / disabled）
@@ -14,7 +15,7 @@ import { getAuthContext, requireAdmin, V3_USER_COLUMNS, type V3User } from "../_
 //   set_role : 役割の変更（target_id, role）。active の人だけ
 //   delete   : 削除（target_id）。v3_users → auth.users の順に削除
 // どれも Authorization: Bearer <Supabaseのアクセストークン> が必要。
-// 更新は「判定に使った status・role」を条件に入れ、判定のあとで変わっていたら 409 を返す。
+// 管理操作はRPC内でも実行者と対象の現在の担当県を照合する。担当県の変更APIは設けない。
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -24,13 +25,14 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 });
 
 const ROLES = ["admin", "viewer"] as const;
-const CONFLICT_MESSAGE = "ほかの管理者が先に変更しました。一覧を読み直してください";
+const ADMIN_ACTIONS = ["list", "approve", "disable", "enable", "set_role", "delete"];
 
 interface RequestBody {
   action?: string;
   display_name?: unknown;
   target_id?: unknown;
   role?: unknown;
+  cursor?: unknown;
 }
 
 function jsonResponse(body: unknown, status: number) {
@@ -80,6 +82,9 @@ async function handleRegister(authUser: User, appUser: V3User | null, body: Requ
       id: authUser.id,
       email: authUser.email ?? null,
       display_name: displayName,
+      status: "pending",
+      role: "viewer",
+      prefecture_code: null,
       last_login_at: new Date().toISOString(),
     })
     .select(V3_USER_COLUMNS)
@@ -103,134 +108,45 @@ async function handleLogin(appUser: V3User | null) {
   return jsonResponse({ ok: true }, 200);
 }
 
-async function handleList() {
-  const { data, error } = await supabase
-    .from("v3_users")
-    .select(V3_USER_COLUMNS)
-    .order("created_at", { ascending: true });
-  if (error) return jsonResponse({ error: "利用者一覧の取得に失敗しました" }, 500);
-  return jsonResponse({ users: data ?? [] }, 200);
-}
-
-async function loadTarget(targetId: unknown): Promise<V3User | Response> {
-  if (typeof targetId !== "string" || !targetId) {
-    return jsonResponse({ error: "target_id を指定してください" }, 400);
-  }
-  const { data, error } = await supabase
-    .from("v3_users")
-    .select(V3_USER_COLUMNS)
-    .eq("id", targetId)
-    .maybeSingle();
-  if (error) return jsonResponse({ error: "利用者の取得に失敗しました" }, 500);
-  if (!data) return jsonResponse({ error: "利用者が見つかりません" }, 404);
-  return data as V3User;
-}
-
-// 対象が有効な管理者のとき、ほかに有効な管理者が1人もいなければエラーを返す（最後の1人を無効化・降格・削除させない）
-async function guardLastAdmin(target: V3User, message: string): Promise<Response | null> {
-  if (target.status !== "active" || target.role !== "admin") return null;
-  const { count, error } = await supabase
-    .from("v3_users")
-    .select("id", { count: "exact", head: true })
-    .eq("status", "active")
-    .eq("role", "admin")
-    .neq("id", target.id);
-  if (error) return jsonResponse({ error: "管理者の人数の確認に失敗しました" }, 500);
-  if (!count) return jsonResponse({ error: message }, 400);
-  return null;
-}
-
-// 判定に使った status・role を条件に入れて更新する。0行なら判定のあとで変わったので 409
-async function updateIfUnchanged(target: V3User, updates: Partial<V3User>) {
-  const { data, error } = await supabase
-    .from("v3_users")
-    .update(updates)
-    .eq("id", target.id)
-    .eq("status", target.status)
-    .eq("role", target.role)
-    .select("id");
-  if (error) return jsonResponse({ error: "更新に失敗しました" }, 500);
-  if (!data || data.length === 0) return jsonResponse({ error: CONFLICT_MESSAGE }, 409);
-  return jsonResponse({ ok: true }, 200);
-}
-
 async function handleAdminAction(action: string, actor: V3User, body: RequestBody) {
-  if (action === "list") return await handleList();
-
-  const target = await loadTarget(body.target_id);
-  if (target instanceof Response) return target;
-  const isSelf = target.id === actor.id;
-
-  if (action === "approve") {
-    if (!isRole(body.role)) return jsonResponse({ error: "役割（admin / viewer）を指定してください" }, 400);
-    if (target.status !== "pending") return jsonResponse({ error: CONFLICT_MESSAGE }, 409);
-    return await updateIfUnchanged(target, {
-      status: "active",
-      role: body.role,
-      approved_at: new Date().toISOString(),
-      approved_by: actor.id,
-    });
+  if (!ADMIN_ACTIONS.includes(action)) return jsonResponse({ error: "操作が正しくありません" }, 400);
+  if (action !== "list" && !isUuid(body.target_id)) return jsonResponse({ error: "利用者IDが正しくありません" }, 400);
+  if ((action === "approve" || action === "set_role") && !isRole(body.role)) {
+    return jsonResponse({ error: "役割（admin / viewer）を指定してください" }, 400);
   }
-
-  if (action === "disable") {
-    if (isSelf) return jsonResponse({ error: "自分自身は無効化できません" }, 400);
-    if (target.status === "disabled") return jsonResponse({ error: CONFLICT_MESSAGE }, 409);
-    const guard = await guardLastAdmin(target, "最後の管理者は無効化できません");
-    if (guard) return guard;
-    return await updateIfUnchanged(target, { status: "disabled" });
+  if (action === "list" && body.cursor != null && !isUuid(body.cursor)) {
+    return jsonResponse({ error: "一覧の取得位置が正しくありません" }, 400);
   }
-
-  if (action === "enable") {
-    if (target.status !== "disabled") return jsonResponse({ error: CONFLICT_MESSAGE }, 409);
-    const updates: Partial<V3User> = { status: "active" };
-    // 承認前に無効化された人は、ここで承認したことにする
-    if (!target.approved_at) {
-      updates.approved_at = new Date().toISOString();
-      updates.approved_by = actor.id;
+  const result = await callScopedRpc(supabase, "v3_manage_users", {
+    p_actor_id: actor.id,
+    p_action: action,
+    p_target_id: action === "list" ? null : body.target_id,
+    p_role: action === "approve" || action === "set_role" ? body.role : null,
+    p_after_id: action === "list" ? body.cursor ?? null : null,
+    p_limit: 200,
+  });
+  if (!result.ok) return jsonResponse({ error: result.error }, result.status);
+  if (action === "list") {
+    if (!Array.isArray(result.users) || (result.next_cursor != null && !isUuid(result.next_cursor))) {
+      return jsonResponse({ error: "利用者一覧の取得に失敗しました" }, 500);
     }
-    return await updateIfUnchanged(target, updates);
+    return jsonResponse({ users: result.users, next_cursor: result.next_cursor ?? null }, 200);
   }
+  if (action !== "delete") return jsonResponse({ ok: true }, 200);
 
-  if (action === "set_role") {
-    if (!isRole(body.role)) return jsonResponse({ error: "役割（admin / viewer）を指定してください" }, 400);
-    if (isSelf) return jsonResponse({ error: "自分自身の役割は変更できません" }, 400);
-    if (target.status !== "active") return jsonResponse({ error: CONFLICT_MESSAGE }, 409);
-    if (target.role === body.role) return jsonResponse({ error: "すでにその役割です" }, 400);
-    if (body.role === "viewer") {
-      const guard = await guardLastAdmin(target, "最後の管理者は降格できません");
-      if (guard) return guard;
-    }
-    return await updateIfUnchanged(target, { role: body.role });
+  // Only the ID returned by the scoped transaction may reach the privileged Auth API.
+  if (!isUuid(result.deleted_user_id) || result.deleted_user_id.toLowerCase() !== (body.target_id as string).toLowerCase()) {
+    return jsonResponse({ error: "削除結果の確認に失敗しました" }, 500);
   }
-
-  if (action === "delete") {
-    if (isSelf) return jsonResponse({ error: "自分自身は削除できません" }, 400);
-    const guard = await guardLastAdmin(target, "最後の管理者は削除できません");
-    if (guard) return guard;
-
-    const { data, error } = await supabase
-      .from("v3_users")
-      .delete()
-      .eq("id", target.id)
-      .eq("status", target.status)
-      .eq("role", target.role)
-      .select("id");
-    if (error) return jsonResponse({ error: "削除に失敗しました" }, 500);
-    if (!data || data.length === 0) return jsonResponse({ error: CONFLICT_MESSAGE }, 409);
-
-    const { error: authError } = await supabase.auth.admin.deleteUser(target.id);
-    if (authError) {
-      // v3_users は消えているので、次にログインすると登録画面に戻る。Googleのログイン情報は Authentication 画面から削除する
-      return jsonResponse({
-        ok: true,
-        auth_deleted: false,
-        warning: "利用者は削除しましたが、ログイン情報（auth.users）の削除に失敗しました。Supabase の Authentication 画面から削除してください",
-      }, 200);
-    }
-    return jsonResponse({ ok: true, auth_deleted: true }, 200);
-  }
-
-  return jsonResponse({ error: `unknown action: ${action}` }, 400);
+  try {
+    const { error } = await supabase.auth.admin.deleteUser(result.deleted_user_id);
+    if (!error) return jsonResponse({ ok: true, auth_deleted: true }, 200);
+  } catch { /* Membership is already removed; keep the existing manual cleanup fallback. */ }
+  return jsonResponse({
+    ok: true,
+    auth_deleted: false,
+    warning: "利用者は削除しましたが、ログイン情報（auth.users）の削除に失敗しました。Supabase の Authentication 画面から削除してください",
+  }, 200);
 }
 
 async function handle(req: Request): Promise<Response> {
@@ -240,11 +156,16 @@ async function handle(req: Request): Promise<Response> {
 
   let body: RequestBody;
   try {
-    body = await req.json();
+    const parsed = await req.json();
+    if (!isObject(parsed)) return jsonResponse({ error: "invalid json body" }, 400);
+    body = parsed as RequestBody;
   } catch {
     return jsonResponse({ error: "invalid json body" }, 400);
   }
   const action = typeof body.action === "string" ? body.action : "";
+  if (!["me", "register", "login", ...ADMIN_ACTIONS].includes(action)) {
+    return jsonResponse({ error: "操作が正しくありません" }, 400);
+  }
 
   const auth = await getAuthContext(supabase, req);
   if (!auth.ok) return jsonResponse({ error: auth.error }, auth.status);
@@ -264,8 +185,8 @@ Deno.serve(async (req) => {
   }
   try {
     return withCors(req, await handle(req));
-  } catch (e) {
-    console.error(e);
+  } catch {
+    console.error("v3-users request failed");
     return withCors(req, jsonResponse({ error: "internal error" }, 500));
   }
 });

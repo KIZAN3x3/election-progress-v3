@@ -6,6 +6,7 @@
 //   ・候補者の登録・編集・削除は syncApi() で v3-sync-progress を JWT 付きで呼ぶ
 /* global SUPABASE_URL, SUPABASE_KEY */
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/+esm';
+import { assignedPrefecture } from './prefecture-scope.js';
 
 // Googleへ移動する前に立てる印。戻ってきた直後だけ最終ログイン日時を記録するため
 const LOGIN_PENDING_KEY = 'v3:googleLoginPending';
@@ -236,8 +237,17 @@ function emailLine(account){
   return el('p', 'account-gate-email', account.email ? `ログイン中: ${account.email}` : '');
 }
 
-// status が active 以外のときに出す画面（unregistered / pending / disabled）
+// 未登録・承認待ち・無効・担当県未設定のときに出す画面
 export function showAccountGate(account){
+  if(account.status === 'active' && !assignedPrefecture(account.user)){
+    const card = gateCard('担当する都道府県の設定待ちです');
+    card.appendChild(el('p', 'account-gate-text', '担当する都道府県の設定をお待ちください。管理者にお問い合わせください'));
+    card.appendChild(emailLine(account));
+    const actions = el('div', 'account-gate-actions');
+    actions.append(button('設定されたか確認する', 'account-gate-btn', () => location.reload()), logoutButton());
+    card.appendChild(actions);
+    return;
+  }
   if(account.status === 'unregistered'){
     renderRegisterForm(account);
     return;
@@ -315,6 +325,7 @@ function renderUserBar(user){
   const header = document.querySelector('.app-header');
   if(!header) return;
   const bar = el('div', 'user-bar');
+  bar.appendChild(el('span', 'user-bar-prefecture', `担当：${assignedPrefecture(user)}`));
   bar.appendChild(el('span', 'user-bar-role', ROLE_LABELS[user.role] || user.role));
   const name = el('span', 'user-bar-name', user.display_name);
   name.title = user.display_name;
@@ -341,7 +352,7 @@ export async function requirePageAccess({ adminOnly = false } = {}){
     return null;
   }
   const account = result.account;
-  if(account.status !== 'active'){
+  if(account.status !== 'active' || !assignedPrefecture(account.user)){
     showAccountGate(account);
     return null;
   }
