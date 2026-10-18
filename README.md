@@ -10,7 +10,7 @@
 - `admin.html` — 管理者専用。候補者の登録・一括登録と、利用者管理（承認・無効化・再有効化・役割変更・削除）。管理者以外が開くと `list.html` に戻します。
 - `privacy.html` — プライバシーポリシー（ログイン不要）。
 - `auth.js` — ログインの共通処理（ESモジュール）。Supabase クライアントの作成、Google ログイン、利用者の状態の確認、状態ごとの画面、ヘッダーの表示名・ログアウト。
-- `config.js` — Supabase接続情報（URL・Publishable key）。
+- `config.js` — SupabaseのURLと公開設定の取得処理。公開用キーの実値は`v3-public-config`から取得する。
 - `status-map.js` — `v3_progress.status` の生の文字列を「未着手／着手中／納品完了」の3段階に変換するマッピング（list.htmlとdetail.html共通）。未知のステータス値は保険的に「着手中」として扱います。
 - `supabase/migrations/` — DB の変更（SQL Editor で手動実行）。`0001_v3_users.sql`（利用者テーブルと判定関数）、`0002_restrict_v3_reads.sql`（読み取りを有効な利用者だけにする RLS）。
 - `supabase/functions/` — Edge Function。`v3-users`（利用者管理）、`v3-sync-progress`（進捗の同期と候補者の登録・編集・削除）、`_shared/`（CORS・ログイン照合の共通処理）。
@@ -73,11 +73,13 @@ Supabase プロジェクトや公開 URL を変えるときは、次をすべて
 | Google プロバイダー | Supabase → Authentication → Sign In / Providers → Google | 有効にして、OAuth クライアントの ID とシークレットを登録 |
 | URL Configuration | Supabase → Authentication → URL Configuration | Site URL: `https://kizan3x3.github.io/election-progress-v3/`。Redirect URLs: `https://kizan3x3.github.io/election-progress-v3/**`、ローカル確認用に `http://localhost:5500/**` |
 | CORS の許可元 | `supabase/functions/_shared/cors.ts` | 公開 URL のオリジンを変えたら書き換えて、両方の Edge Function を再デプロイ |
-| `config.js` | リポジトリ | Supabase の URL と publishable key |
+| `config.js` | リポジトリ | SupabaseのURL。公開用キーは匿名GETの`v3-public-config`から取得 |
 | Edge Function の secret | Supabase → Edge Functions → Secrets | `V3_SYNC_TOKEN`（`SUPABASE_URL`・`SUPABASE_SERVICE_ROLE_KEY` は自動で入る） |
-| GitHub Secrets | GitHub → Settings → Secrets and variables → Actions | `V3_SYNC_TOKEN`、`SUPABASE_SECRET_KEY`、`GOOGLE_SERVICE_ACCOUNT_KEY_B64`（または `GOOGLE_SERVICE_ACCOUNT_KEY`） |
-| ワークフローの publishable key | `.github/workflows/sync-sheets.yml` | `SUPABASE_KEY` |
+| GitHub Secrets | GitHub → Settings → Secrets and variables → Actions | `SUPABASE_PUBLISHABLE_KEY`、`V3_SYNC_TOKEN`、`SUPABASE_SECRET_KEY`、`GOOGLE_SERVICE_ACCOUNT_KEY_B64`（または `GOOGLE_SERVICE_ACCOUNT_KEY`） |
+| ワークフローの publishable key | `.github/workflows/sync-sheets.yml` | `SUPABASE_KEY`へrepository secretを渡す |
 | Apps Script のスクリプトプロパティ | 各 Apps Script プロジェクト | `GITHUB_PAT`（`dispatch-trigger.gs`）。`V3_SYNC_TOKEN` は置かない方針 |
+
+公開用キーをソースから外す配信順と検証は[公開設定の手順](docs/public-config.md)を参照。新Functionを先に配信し、GitHubのrepository secret設定を確認してからフロントを切り替える。ブラウザの通信では公開用キーを取得できる。
 
 ### Edge Function のデプロイ
 
@@ -87,6 +89,7 @@ Supabase プロジェクトや公開 URL を変えるときは、次をすべて
 |---|---|---|
 | `v3-sync-progress` | `true` | 同期の publishable key も、画面から送るログイン中の利用者のトークンも、この設定で入口を通る |
 | `v3-users` | `false` | 関数の中の `getUser` で照合する |
+| `v3-public-config` | `false` | 認証前に公開用キーだけを返すGET/OPTIONS。SDK・DB接続なし |
 
 事前の確認（設定は変えない）:
 

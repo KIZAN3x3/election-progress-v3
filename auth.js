@@ -1,10 +1,10 @@
 // Googleログイン＋管理者承認制の共通処理（ES モジュール）。
-// SUPABASE_URL / SUPABASE_KEY は config.js（通常の <script>）で定義した値を使う。
+// config.js（通常の <script>）の公開設定取得が完了してからクライアントを作る。
 //   ・ログインは Supabase Auth の Google プロバイダー（PKCE）。戻り先は今のページ
 //   ・利用者の状態（未登録・承認待ち・有効・無効）と役割は Edge Function v3-users の me で調べる
 //   ・データの読み取りは getSupabase() のクライアント（ログイン中の利用者のトークン付き）で行う
 //   ・候補者の登録・編集・削除は syncApi() で v3-sync-progress を JWT 付きで呼ぶ
-/* global SUPABASE_URL, SUPABASE_KEY */
+/* global SUPABASE_URL, SUPABASE_KEY, SUPABASE_CONFIG_READY */
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/+esm';
 
 // Googleへ移動する前に立てる印。戻ってきた直後だけ最終ログイン日時を記録するため
@@ -22,8 +22,18 @@ export const ROLE_LABELS = { admin: '管理者', viewer: '閲覧者' };
 sessionStorage.removeItem('v3_auth');
 
 let client = null;
+const CONFIG_UNAVAILABLE_MESSAGE = '接続設定を取得できませんでした。ページを再読み込みしてください';
+
+async function waitForConfig(){
+  let ready = false;
+  try {
+    if(typeof SUPABASE_CONFIG_READY !== 'undefined') ready = await SUPABASE_CONFIG_READY;
+  } catch {}
+  if(ready !== true) throw new Error(CONFIG_UNAVAILABLE_MESSAGE);
+}
 
 export function getSupabase(){
+  if(typeof SUPABASE_KEY !== 'string' || !SUPABASE_KEY) throw new Error(CONFIG_UNAVAILABLE_MESSAGE);
   if(!client){
     client = createClient(SUPABASE_URL, SUPABASE_KEY, {
       auth: { flowType: 'pkce', persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
@@ -39,6 +49,7 @@ export function isInAppBrowser(){
 }
 
 export async function startGoogleLogin(){
+  await waitForConfig();
   sessionStorage.setItem(LOGIN_PENDING_KEY, '1');
   const redirectTo = `${location.origin}${location.pathname}${location.search}`;
   const { error } = await getSupabase().auth.signInWithOAuth({ provider: 'google', options: { redirectTo } });
@@ -63,6 +74,7 @@ function consumeOAuthParams(){
 }
 
 async function accessToken(){
+  await waitForConfig();
   const { data } = await getSupabase().auth.getSession(); // 期限が近ければ更新済みのものが返る
   return data && data.session ? data.session.access_token : null;
 }
@@ -96,16 +108,43 @@ export async function syncApi(body){
 }
 
 // この端末のセッションだけを消す（ほかの端末のログインは消さない）
+function clearStoredLocalSession(){
+  // Matches supabase-js 2.117.3's default key and auth-js PKCE/user slots.
+  // Used only when configuration failed before any SDK client was created.
+  const key = `sb-${new URL(SUPABASE_URL).hostname.split('.')[0]}-auth-token`;
+  const remove = [key, key + '-user', key + '-code-verifier', key + '-flows-code-verifier'];
+  for(let index = 0; index < localStorage.length; index++){
+    const storedKey = localStorage.key(index);
+    if(storedKey && storedKey.startsWith(key + '-flow-') && storedKey.endsWith('-code-verifier')) remove.push(storedKey);
+  }
+  for(const storedKey of remove) localStorage.removeItem(storedKey);
+  sessionStorage.removeItem(LOGIN_PENDING_KEY);
+}
+
 export async function signOutLocal(){
   try {
-    await getSupabase().auth.signOut({ scope: 'local' });
-  } catch (e) {
-    console.error('ログアウトに失敗:', e);
+    if(!client){
+      try {
+        await waitForConfig();
+      } catch {
+        clearStoredLocalSession();
+        return true;
+      }
+    }
+    const { error } = await getSupabase().auth.signOut({ scope: 'local' });
+    if(error) throw error;
+    return true;
+  } catch {
+    console.error('ログアウトに失敗しました');
+    return false;
   }
 }
 
 export async function logout(){
-  await signOutLocal();
+  if(await signOutLocal() === false){
+    showFatal('ログアウトできませんでした。ブラウザのサイトデータを削除してください');
+    return;
+  }
   location.href = 'index.html';
 }
 
@@ -136,6 +175,7 @@ export function safeNextPage(){
 // ページを開いたときに、セッションがあれば利用者の状態を調べる。
 // 返り値: { account: null | { status, email, google_name, user }, message }
 export async function loadAccount(){
+  await waitForConfig();
   const supabase = getSupabase(); // 作成時に URL の ?code= を読み取り、セッションに交換する
   const { data } = await supabase.auth.getSession(); // 交換が終わるまで待ってから返る
   const message = consumeOAuthParams();

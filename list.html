@@ -105,11 +105,11 @@ body.auth-pending > *{visibility:hidden;}
     <div class="form-message" id="editMessage"></div>
   </div>
 </div>
-<script src="config.js"></script>
+<script src="config.js?v=public-config-1"></script>
 <script src="status-map.js"></script>
 <script src="prefectures.js"></script>
 <script type="module">
-import { requirePageAccess, getSupabase, syncApi } from './auth.js';
+import { requirePageAccess, getSupabase, syncApi } from './auth.js?v=public-config-1';
 
 // 管理者だけに「候補者を登録」・編集・削除を出す（本当の判定は Edge Function 側）
 let isAdmin = false;
