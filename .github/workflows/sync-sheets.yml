@@ -27,7 +27,7 @@ jobs:
 
       - name: Sync sheets
         env:
-          SUPABASE_KEY: "sb_publishable_UnDHy2FKZHZkUTiSAR8isg_V8B3w4Eb"
+          SUPABASE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
           V3_SYNC_TOKEN: ${{ secrets.V3_SYNC_TOKEN }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
           # GOOGLE_SERVICE_ACCOUNT_KEY_B64未設定の間はGOOGLE_SERVICE_ACCOUNT_KEYにフォールバックする
