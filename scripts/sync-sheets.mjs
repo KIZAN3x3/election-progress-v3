@@ -22,9 +22,27 @@ const SYNC_REQUEST_TIMEOUT_MS = 30000;
 const SYNC_REQUEST_RETRIES = 1;
 const FAILURE_RATIO_THRESHOLD = 0.5;
 
-function requireEnv(name, value) {
+// 公開Actionsログには固定の分類・HTTPステータス・件数だけを出す。
+// 外部APIの例外やレスポンスには個人情報・URL・認証情報が含まれ得る。
+class SyncError extends Error {
+  constructor(code, status) {
+    super(code);
+    this.code = code;
+    this.status = status;
+  }
+}
+
+function publicErrorSummary(error) {
+  const code = error instanceof SyncError ? error.code : "EXTERNAL_ERROR";
+  const status = error instanceof SyncError ? error.status : error?.response?.status;
+  return Number.isInteger(status) && status >= 100 && status <= 599
+    ? `${code}（HTTP ${status}）`
+    : code;
+}
+
+function requireEnv(value) {
   if (!value) {
-    throw new Error(`環境変数 ${name} が設定されていません`);
+    throw new SyncError("MISSING_ENVIRONMENT");
   }
   return value;
 }
@@ -40,7 +58,7 @@ async function withRetry(fn, retries = 3, initialDelayMs = 1000) {
       if (attempt >= retries) {
         throw e;
       }
-      console.log(`  リトライします（${attempt + 1}/${retries}）: ${e.message}`);
+      console.log(`  リトライします（${attempt + 1}/${retries}）: ${publicErrorSummary(e)}`);
       await new Promise((resolve) => setTimeout(resolve, delay));
       delay *= 2;
     }
@@ -112,17 +130,17 @@ function buildRecords(candidateCode, items) {
 
 async function fetchCandidatesWithSheet() {
   const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/v3_candidates?select=id,candidate_code,name,sheet_id,sheet_modified_at&sheet_id=not.is.null`,
+    `${SUPABASE_URL}/rest/v1/v3_candidates?select=id,candidate_code,sheet_id,sheet_modified_at&sheet_id=not.is.null`,
     { headers: { apikey: SUPABASE_SECRET_KEY } }
   );
   if (!res.ok) {
-    throw new Error(`候補者一覧の取得に失敗しました（${res.status}）: ${await res.text()}`);
+    throw new SyncError("CANDIDATES_FETCH_FAILED", res.status);
   }
   const rows = await res.json();
   const candidates = rows.filter((c) => c.sheet_id && String(c.sheet_id).trim() !== "");
   // RLSなどで読めなくなった場合に、何もせず成功扱いになるのを防ぐ
   if (candidates.length === 0) {
-    throw new Error("候補者一覧が0件でした。キーの権限やRLSの設定を確認してください");
+    throw new SyncError("NO_CANDIDATES");
   }
   return candidates;
 }
@@ -136,7 +154,7 @@ async function fetchModifiedTime(driveApi, sheetId) {
     );
     return res.data.modifiedTime || null;
   } catch (e) {
-    console.error(`  modifiedTime取得に失敗（sheet_id: ${sheetId}）: ${e.message}`);
+    console.error(`  modifiedTime取得に失敗: ${publicErrorSummary(e)}`);
     return null;
   }
 }
@@ -175,17 +193,15 @@ async function syncOneCandidate(sheetsApi, candidate, modifiedTime) {
 
   const sheetCandidateCode = findLabelValue(infoRows, CANDIDATE_ID_LABEL);
   if (!sheetCandidateCode) {
-    throw new Error("シート内に候補者IDが見つかりません");
+    throw new SyncError("CANDIDATE_CODE_MISSING");
   }
   if (sheetCandidateCode !== candidate.candidate_code) {
-    throw new Error(
-      `候補者IDが一致しません（DB: ${candidate.candidate_code} / シート: ${sheetCandidateCode}）。sheet_idの登録間違いの可能性があります`
-    );
+    throw new SyncError("CANDIDATE_CODE_MISMATCH");
   }
 
   const items = collectItems(listRows);
   if (items.length === 0) {
-    throw new Error("反映する項目が見つかりませんでした");
+    throw new SyncError("NO_PROGRESS_ITEMS");
   }
 
   const records = buildRecords(sheetCandidateCode, items);
@@ -210,13 +226,13 @@ async function syncOneCandidate(sheetsApi, candidate, modifiedTime) {
       // 一時的なエラー（Supabase Edge Functionの一時停止など）はリトライ対象とする
       const isTemporaryError = /UNAVAILABLE|DEGRADED/.test(text);
       if (res.status < 200 || res.status >= 300 || isTemporaryError) {
-        throw new Error(`同期リクエストが失敗しました（${res.status}）: ${text}`);
+        throw new SyncError("SYNC_REQUEST_FAILED", res.status);
       }
 
       return text;
     } catch (e) {
       if (e.name === "AbortError") {
-        throw new Error(`同期リクエストがタイムアウトしました（${SYNC_REQUEST_TIMEOUT_MS / 1000}秒）`);
+        throw new SyncError("SYNC_TIMEOUT");
       }
       throw e;
     } finally {
@@ -228,14 +244,14 @@ async function syncOneCandidate(sheetsApi, candidate, modifiedTime) {
   try {
     body = JSON.parse(bodyText);
   } catch {
-    throw new Error(`同期レスポンスの解析に失敗しました: ${bodyText}`);
+    throw new SyncError("INVALID_SYNC_RESPONSE");
   }
 
   logCleanup(body.cleanup);
 
   const errorResult = (body.results || []).find((r) => r.status === "error");
   if (errorResult) {
-    throw new Error(`同期処理でエラーが返されました: ${JSON.stringify(errorResult)}`);
+    throw new SyncError("SYNC_RESULT_ERROR");
   }
 
   return body;
@@ -244,21 +260,24 @@ async function syncOneCandidate(sheetsApi, candidate, modifiedTime) {
 // シートから消えた見出しの行の掃除結果をログに出す（削除・警告・エラーがあったときだけ）
 function logCleanup(cleanup) {
   if (!Array.isArray(cleanup)) return;
+  let deletedCount = 0;
+  let warningCount = 0;
+  let errorCount = 0;
   for (const c of cleanup) {
-    if (c.deleted && c.deleted.length > 0) {
-      console.log(`  見出しの掃除: ${c.candidate_code} から ${c.deleted.length}件削除`);
-      c.deleted.forEach((r) => console.log(`    - 【${r.period}】${r.item_name}（${r.status}）`));
-    }
-    if (c.warning) console.warn(`  見出しの掃除（警告）: ${c.candidate_code} - ${c.warning}`);
-    if (c.error) console.error(`  見出しの掃除（エラー）: ${c.candidate_code} - ${c.error}`);
+    if (Array.isArray(c?.deleted)) deletedCount += c.deleted.length;
+    if (c?.warning) warningCount++;
+    if (c?.error) errorCount++;
   }
+  if (deletedCount) console.log(`  見出しの掃除: ${deletedCount}件削除`);
+  if (warningCount) console.warn(`  見出しの掃除（警告）: ${warningCount}件`);
+  if (errorCount) console.error(`  見出しの掃除（エラー）: ${errorCount}件`);
 }
 
 async function main() {
-  requireEnv("SUPABASE_KEY", SUPABASE_KEY);
-  requireEnv("SUPABASE_SECRET_KEY", SUPABASE_SECRET_KEY);
-  requireEnv("V3_SYNC_TOKEN", SYNC_TOKEN);
-  requireEnv("GOOGLE_SERVICE_ACCOUNT_KEY", SERVICE_ACCOUNT_KEY_JSON);
+  requireEnv(SUPABASE_KEY);
+  requireEnv(SUPABASE_SECRET_KEY);
+  requireEnv(SYNC_TOKEN);
+  requireEnv(SERVICE_ACCOUNT_KEY_JSON);
 
   const credentials = JSON.parse(SERVICE_ACCOUNT_KEY_JSON);
   const auth = new google.auth.JWT({
@@ -302,23 +321,24 @@ async function main() {
   let successCount = 0;
   const failures = [];
 
-  for (const candidate of toSync) {
+  for (const [index, candidate] of toSync.entries()) {
     try {
       const modifiedTime = candidate._fetchedModifiedTime || (await fetchModifiedTime(driveApi, candidate.sheet_id));
       await syncOneCandidate(sheetsApi, candidate, modifiedTime);
       successCount++;
-      console.log(`OK: ${candidate.candidate_code}（${candidate.name}）`);
+      console.log(`OK: 対象 ${index + 1}/${toSync.length}`);
     } catch (e) {
-      failures.push({ candidate_code: candidate.candidate_code, name: candidate.name, error: e.message });
-      console.error(`NG: ${candidate.candidate_code}（${candidate.name}） - ${e.message}`);
+      const error = publicErrorSummary(e);
+      failures.push({ position: index + 1, error });
+      console.error(`NG: 対象 ${index + 1}/${toSync.length} - ${error}`);
     }
   }
 
   console.log("---");
   console.log(`成功: ${successCount}件 / 失敗: ${failures.length}件 / スキップ: ${skippedCount}件`);
   if (failures.length > 0) {
-    console.log("失敗した候補者:");
-    failures.forEach((f) => console.log(`  - ${f.candidate_code}（${f.name}）: ${f.error}`));
+    console.log("失敗した処理（番号は今回の実行内のみ）:");
+    failures.forEach((f) => console.log(`  - 対象 ${f.position}: ${f.error}`));
   }
 
   // 一過性の失敗でランが埋まらないよう、失敗率が閾値を超えた場合のみ全体を失敗扱いにする
@@ -328,6 +348,6 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error("致命的エラー:", e);
+  console.error(`致命的エラー: ${publicErrorSummary(e)}`);
   process.exit(1);
 });
