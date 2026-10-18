@@ -1,4 +1,4 @@
-import { createClient } from "jsr:@supabase/supabase-js@2";
+import { createClient } from "jsr:@supabase/supabase-js@2.117.3";
 import { corsHeaders, withCors } from "../_shared/cors.ts";
 import { getAuthContext, requireAdmin } from "../_shared/auth.ts";
 import { type ExistingProgressRow, planOrphanCleanup } from "./cleanup.ts";
@@ -154,15 +154,8 @@ async function handleDeleteCandidate(body: SyncRequestBody) {
     return jsonResponse({ error: "id is required" }, 400);
   }
 
-  const { error: progressError } = await supabase
-    .from("v3_progress")
-    .delete()
-    .eq("candidate_id", id);
-
-  if (progressError) {
-    return jsonResponse({ error: progressError.message }, 500);
-  }
-
+  // The existing v3_progress(candidate_id) FK has ON DELETE CASCADE. Deleting
+  // only the parent keeps candidate/progress removal in one DB transaction.
   const { error: candidateError } = await supabase
     .from("v3_candidates")
     .delete()
@@ -417,7 +410,7 @@ async function handle(req: Request): Promise<Response> {
         .in("id", idsToUpdate);
 
       if (modifiedAtError) {
-        console.error("sheet_modified_at update failed:", modifiedAtError.message);
+        console.error("SYNC_MODIFIED_AT_UPDATE_FAILED");
       }
     }
   }
@@ -446,7 +439,7 @@ async function cleanupOrphanPeriods(
     .select("id, period, item_name, status")
     .eq("candidate_id", candidateId);
   if (existingError) {
-    console.error(`[cleanup] ${candidateCode}: 現在の行の取得に失敗: ${existingError.message}`);
+    console.error("SYNC_CLEANUP_READ_FAILED");
     return { candidate_code: candidateCode, deleted: [], error: existingError.message };
   }
 
@@ -456,7 +449,7 @@ async function cleanupOrphanPeriods(
   if (plan.action === "skip") {
     if (plan.warning) {
       const periods = [...new Set(plan.rows.map((r) => r.period))].join(", ");
-      console.warn(`[cleanup] ${candidateCode}: ${plan.reason}（対象の見出し: ${periods}）`);
+      console.warn("SYNC_CLEANUP_SKIPPED", plan.rows.length);
       return { candidate_code: candidateCode, deleted: [], warning: `${plan.reason}（対象の見出し: ${periods}）` };
     }
     return { candidate_code: candidateCode, deleted: [], skipped: plan.reason };
@@ -469,7 +462,7 @@ async function cleanupOrphanPeriods(
     .in("id", plan.rows.map((r) => r.id))
     .select("period, item_name, status");
   if (deleteError) {
-    console.error(`[cleanup] ${candidateCode}: 削除に失敗: ${deleteError.message}`);
+    console.error("SYNC_CLEANUP_DELETE_FAILED");
     return { candidate_code: candidateCode, deleted: [], error: deleteError.message };
   }
 
@@ -479,14 +472,14 @@ async function cleanupOrphanPeriods(
     item_name: r.item_name as string,
     status: r.status as string | null,
   }));
-  console.log(`[cleanup] ${candidateCode}: シートから消えた見出しの行を ${deleted.length} 件削除: ${JSON.stringify(deleted)}`);
+  console.log("SYNC_CLEANUP_DELETED", deleted.length);
 
   if (deleted.length > 0) {
     const { error: touchError } = await supabase
       .from("v3_candidates")
       .update({ last_updated_at: new Date().toISOString() })
       .eq("id", candidateId);
-    if (touchError) console.error(`[cleanup] ${candidateCode}: last_updated_at の更新に失敗: ${touchError.message}`);
+    if (touchError) console.error("SYNC_CANDIDATE_TOUCH_FAILED");
   }
   return { candidate_code: candidateCode, deleted };
 }
@@ -495,5 +488,10 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders(req) });
   }
-  return withCors(req, await handle(req));
+  try {
+    return withCors(req, await handle(req));
+  } catch {
+    console.error("SYNC_REQUEST_FAILED");
+    return withCors(req, jsonResponse({ error: "internal error" }, 500));
+  }
 });

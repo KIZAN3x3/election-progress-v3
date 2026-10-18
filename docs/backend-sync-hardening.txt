@@ -1,0 +1,22 @@
+Backend sync hardening (base main 0674bea032d9cfeee38e2eadce1455391ca53e34)
+
+Scope
+No prefecture assignment or geographic restriction is introduced. Approved administrators retain the existing nationwide candidate creation/edit/delete behavior. The frontend, RLS policies, sync token, candidate creation/update payloads, fullSheet cleanup threshold, modifiedTime behavior and successful response structures are unchanged.
+
+Candidate deletion
+The old handler deleted progress with one REST request and deleted its parent with a second request. If the second failed, progress could already be gone. The revised handler deletes only v3_candidates. The existing v3_progress(candidate_id) -> v3_candidates(id) ON DELETE CASCADE performs the dependent deletion in the same PostgreSQL transaction.
+Evidence: extended-platform-audit-20261018.json recorded this FK in the target project. Before deployment, run docs/preflight-delete-cascade.sql in the intended project and require exactly one validated ON DELETE CASCADE FK. Do not deploy this change against an unverified different schema. The preflight reads only catalog metadata and is not a data-deletion test.
+
+Logging
+The function's console output is restricted to fixed SYNC_* classifications and numeric counts. It no longer emits candidate codes, period names, item names, statuses, deleted-row JSON, remote error messages or arbitrary thrown exception objects. The outer handler catches unexpected failures and returns the standard internal-error response with CORS headers while logging only SYNC_REQUEST_FAILED.
+Authorized API response diagnostics remain available as before; this change does not claim to configure or erase platform request logs or existing stored logs.
+
+Dependencies
+Sync and shared Auth type imports are pinned to jsr:@supabase/supabase-js@2.117.3. The users-function owner pins its import to the same version. supabase/functions/deno.lock records the dependency graph and integrity hashes. Frozen-lock checking is required during review/CI; merely committing a lockfile is not evidence that every deployment tool honors that lockfile. Verify the deployed source/bundle and import version after deployment.
+Official guidance checked: https://supabase.com/docs/guides/functions/dependencies and https://supabase.com/docs/guides/security/npm-security .
+
+Validation
+Node v24.18.0: node --test scripts/backend-sync-hardening.test.mjs
+The tests execute the actual sync handler, Auth helper, CORS helper and cleanup planner with synthetic Auth/DB dependencies and no network. Covered: single parent deletion, failure without an earlier progress deletion, missing/invalid JWT, viewer/pending/disabled denial, retained nationwide mixed-prefecture bulk creation, machine-token separation, unknown-action denial, cleanup success/skip/read/delete/touch/modifiedTime failures, and unexpected exception redaction. API cleanup responses are checked to retain their existing structure and diagnostics.
+Deno v2.9.7: deno check --no-config --cached-only --lock=supabase/functions/deno.lock --frozen-lockfile supabase/functions/v3-sync-progress/index.ts supabase/functions/v3-users/index.ts
+No production write/delete was used for testing. No commit, push or deployment was performed by this implementation task.
