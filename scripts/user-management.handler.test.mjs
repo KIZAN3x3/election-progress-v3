@@ -27,7 +27,7 @@ function boot(options={}) {
     },
   };
   vm.runInNewContext(stripTypeScriptTypes([
-    source('../supabase/functions/_shared/auth.ts'),source('../supabase/functions/_shared/cors.ts'),source('../supabase/functions/v3-users/index.ts'),
+    source('../supabase/functions/_shared/backend-key.ts'),source('../supabase/functions/_shared/auth.ts'),source('../supabase/functions/_shared/cors.ts'),source('../supabase/functions/v3-users/index.ts'),
   ].join('\n')),{
     Request,Response,Headers,
     createClient:()=>client,

@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "sync-sheets": "node scripts/sync-sheets.mjs",
-    "test": "node --disable-warning=ExperimentalWarning --test scripts/*.test.mjs supabase/functions/v3-public-config/test.mjs"
+    "test": "node --disable-warning=ExperimentalWarning --test scripts/*.test.mjs supabase/functions/_shared/*.test.mjs supabase/functions/v3-public-config/test.mjs"
   },
   "dependencies": {
     "googleapis": "^176.0.0"

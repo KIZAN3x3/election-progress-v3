@@ -1,6 +1,7 @@
 import { createClient } from "jsr:@supabase/supabase-js@2.117.3";
 import { corsHeaders, withCors } from "../_shared/cors.ts";
 import { getAuthContext, requireAdmin } from "../_shared/auth.ts";
+import { getBackendKey } from "../_shared/backend-key.ts";
 import { type ExistingProgressRow, planOrphanCleanup } from "./cleanup.ts";
 
 interface ProgressItem {
@@ -45,10 +46,9 @@ interface SyncRequestBody {
 }
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const V3_SYNC_TOKEN = Deno.env.get("V3_SYNC_TOKEN");
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+const supabase = createClient(SUPABASE_URL, getBackendKey(Deno.env.get));
 
 // admin.html/list.htmlの誤操作で候補者シートにマスターシートのIDが
 // 登録されるのを防ぐためのガード（クライアント側チェックのバイパス対策）

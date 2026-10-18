@@ -6,7 +6,7 @@ import vm from 'node:vm';
 
 // Runs actual handlers/helpers with synthetic Auth, DB and logs. No network.
 const functionRoot = new URL('../supabase/functions/', import.meta.url);
-const files = ['_shared/auth.ts', '_shared/cors.ts', 'v3-sync-progress/cleanup.ts', 'v3-sync-progress/index.ts'];
+const files = ['_shared/backend-key.ts', '_shared/auth.ts', '_shared/cors.ts', 'v3-sync-progress/cleanup.ts', 'v3-sync-progress/index.ts'];
 const actualCode = (await Promise.all(files.map(async path => {
   const source = await readFile(new URL(path, functionRoot), 'utf8');
   return stripTypeScriptTypes(source.replace(/^import[^\n]+\r?\n/gm, ''), { mode: 'strip' }).replace(/^export /gm, '');
