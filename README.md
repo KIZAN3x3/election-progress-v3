@@ -27,23 +27,23 @@ Google ログイン（Supabase Auth）＋管理者承認制です。共通パス
 
 1. `index.html` の「Google でログイン」から Google にログインする（PKCE。戻り先は元のページ）。LINE・チャットワークなどのアプリ内ブラウザでは Google がログインを拒否するため、「Safari か Chrome で開いてください」と案内する
 2. 初回は表示名を入力して登録する → `v3_users` に `status='pending'`（承認待ち）、`role='viewer'` で作られる
-3. 管理者が `admin.html` の「利用者管理」で、役割（管理者／閲覧者）を選んで承認する → `status='active'`
-4. 有効な利用者だけが一覧・詳細を読める。承認待ち・無効の人には、それぞれの画面（「承認待ちです」「このアカウントは利用できません」）を出す
+3. 作成者が確認した担当県をDBで設定し、同県管理者が `admin.html` の「利用者管理」で役割を選んで承認する → `status='active'`
+4. 有効かつ担当県割当済みの利用者だけが、担当県の一覧・詳細を読める。未割当・承認待ち・無効の人には状態ごとの画面を出す
 
 ### 役割
 
-- **管理者（admin）**: 一覧・詳細の閲覧、候補者の登録・一括登録・編集・削除、利用者管理
-- **閲覧者（viewer）**: 一覧・詳細の閲覧のみ（登録・編集・削除のボタンと `admin.html` へのリンクは出さない）
+- **管理者（admin）**: 担当県の一覧・詳細、候補者の登録・一括登録・編集・削除、同県利用者の管理。全国例外なし
+- **閲覧者（viewer）**: 担当県の一覧・詳細のみ（登録・編集・削除のボタンと `admin.html` へのリンクは出さない）
 
 ### どこで守っているか
 
 | 対象 | 仕組み |
 |---|---|
-| `v3_candidates` / `v3_progress` の読み取り | RLS（`0002`）。`authenticated` かつ `is_active_user()` のときだけ読める。ログインしていない・承認待ち・無効の人は 0 件 |
-| 候補者の登録・編集・削除 | Edge Function `v3-sync-progress` が JWT を照合し、`v3_users` で `status=active` かつ `role=admin` の人だけ許可 |
+| `v3_candidates` / `v3_progress` の読み取り | 最新migrationの県別RLS。active本人の承認済み担当県だけを許可。進捗は親候補者の県も確認し、未割当は拒否 |
+| 候補者の登録・編集・削除 | Edge FunctionでJWTを検証し、サーバー専用RPCのtransaction内で実行者のactive/admin/担当県と対象の変更前・変更先県を照合 |
 | 進捗の同期（`action=sync`） | 今までどおり `V3_SYNC_TOKEN` で照合（GitHub Actions 用。Apps Script にはトークンを置かない） |
 | Edge Function の入口 | `v3-sync-progress` は Supabase の JWT 検証（`verify_jwt: true`）も有効。`v3-users` は `verify_jwt: false` で、関数の中の `getUser` で照合 |
-| 利用者管理 | Edge Function `v3-users`。JWT を照合し、管理者の操作は有効な管理者だけ。自分自身の無効化・降格・削除、最後の1人の管理者の無効化・降格・削除はできない。判定のあとで状態が変わっていたら 409 |
+| 利用者管理 | Edge Function `v3-users`と県別RPC。JWT検証後、DB内で有効な同県管理者か再照合。自己停止・役割変更・削除を拒否し、県単位で最後の管理者を保護 |
 | `v3_users` | RLS 有効・ポリシーなし。画面からは直接読めず、`v3-users`（service_role）だけが扱う |
 | ブラウザからの呼び出し元 | 両方の Edge Function の CORS を `https://kizan3x3.github.io` と `http://localhost:5500` だけに許可 |
 
@@ -52,15 +52,18 @@ Google ログイン（Supabase Auth）＋管理者承認制です。共通パス
 ### 最初の管理者の作り方
 
 1. 本番の画面で Google ログインし、表示名を入力して登録する（承認待ちになる）
-2. Supabase の SQL Editor で、自分の行を有効な管理者にする
+2. 作成者が本人と担当県を確認し、SupabaseのSQL Editorで対象の1行だけを有効な同県管理者にする（下記UUID/県コードは例で、公開PRへ実利用者の値を保存しない）
 
    ```sql
+   begin;
+   select pg_advisory_xact_lock(861713903);
    update public.v3_users
-      set status = 'active', role = 'admin', approved_at = now()
-    where email = '<自分の Google アカウントのメールアドレス>';
+      set status = 'active', role = 'admin', approved_at = now(), prefecture_code = '23'
+    where id = '<確認済み利用者UUID>'::uuid;
+   commit;
    ```
 
-3. 画面で「承認されたか確認する」を押す。2人目以降は `admin.html` の利用者管理から承認する
+3. 画面で「承認されたか確認する」を押す。2人目以降も作成者による担当県設定が先で、同県管理者だけが `admin.html` から承認する。反映順と県割当は [担当県の手順](docs/prefecture-access.md) を参照
 
 ### 移行時に設定し直す項目
 
