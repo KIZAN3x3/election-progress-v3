@@ -1,4 +1,5 @@
-import type { SupabaseClient, User } from "jsr:@supabase/supabase-js@2";
+import type { SupabaseClient, User } from "jsr:@supabase/supabase-js@2.117.3";
+import { isPrefectureCode } from "./prefectures.ts";
 
 export interface V3User {
   id: string;
@@ -6,6 +7,7 @@ export interface V3User {
   display_name: string;
   status: "pending" | "active" | "disabled";
   role: "admin" | "viewer";
+  prefecture_code: string | null;
   approved_at: string | null;
   approved_by: string | null;
   last_login_at: string | null;
@@ -13,7 +15,7 @@ export interface V3User {
 }
 
 export const V3_USER_COLUMNS =
-  "id, email, display_name, status, role, approved_at, approved_by, last_login_at, created_at";
+  "id, email, display_name, status, role, prefecture_code, approved_at, approved_by, last_login_at, created_at";
 
 export type AuthResult =
   | { ok: true; authUser: User; appUser: V3User | null }
@@ -57,8 +59,8 @@ export async function getAuthContext(supabase: SupabaseClient, req: Request): Pr
   return { ok: true, authUser: data.user, appUser: (appUser as V3User | null) ?? null };
 }
 
-// 有効（active）な管理者（admin）だけを通す。承認待ち・無効・未登録・閲覧者は 403
-export function requireAdmin(
+// Assignment is trusted DB state, never a browser parameter or user_metadata claim.
+export function requireAssignedUser(
   auth: AuthResult,
 ): { ok: true; actor: V3User } | { ok: false; status: number; error: string } {
   if (!auth.ok) return auth;
@@ -66,6 +68,19 @@ export function requireAdmin(
   if (!user || user.status !== "active") {
     return { ok: false, status: 403, error: "このアカウントは現在利用できません" };
   }
+  if (!isPrefectureCode(user.prefecture_code)) {
+    return { ok: false, status: 403, error: "担当都道府県が割り当てられていません" };
+  }
+  return { ok: true, actor: user };
+}
+
+// Administrators also require one assigned prefecture; there is no national exception.
+export function requireAdmin(
+  auth: AuthResult,
+): { ok: true; actor: V3User } | { ok: false; status: number; error: string } {
+  const assigned = requireAssignedUser(auth);
+  if (!assigned.ok) return assigned;
+  const user = assigned.actor;
   if (user.role !== "admin") {
     return { ok: false, status: 403, error: "管理者のみ操作できます" };
   }

@@ -40,6 +40,7 @@ body.auth-pending > *{visibility:hidden;}
 <script src="status-map.js"></script>
 <script type="module">
 import { requirePageAccess, getSupabase } from './auth.js';
+import { candidateInScope } from './prefecture-scope.js';
 
 const STAGE_CLASS = { '未着手': 'stage-todo', '着手中': 'stage-doing', '納品完了': 'stage-done' };
 const PERIOD_ORDER = ['政治活動期間', '選挙期間'];
@@ -48,7 +49,7 @@ function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
 }
 
-async function render(){
+async function render(user){
   const el = document.getElementById('content');
   const params = new URLSearchParams(location.search);
   const candidateId = params.get('id');
@@ -59,25 +60,28 @@ async function render(){
   }
 
   const supabase = getSupabase();
-  const [candidatesResult, progressResult] = await Promise.all([
-    supabase.from('v3_candidates').select('id,name,election_name').eq('id', candidateId),
-    supabase.from('v3_progress').select('item_name,period,required,status').eq('candidate_id', candidateId).order('sort_order', { ascending: true, nullsFirst: false })
-  ]);
+  const candidatesResult = await supabase.from('v3_candidates').select('id,name,election_name,prefecture').eq('id', candidateId);
 
-  if(candidatesResult.error || progressResult.error){
-    console.error(candidatesResult.error || progressResult.error);
+  if(candidatesResult.error){
+    console.error(candidatesResult.error);
     el.innerHTML = '<div class="empty">データの読み込みに失敗しました。ページを読み直してください</div>';
     return;
   }
 
   const candidates = candidatesResult.data;
-  const progress = progressResult.data;
   const candidate = Array.isArray(candidates) ? candidates[0] : null;
-  if(!candidate){
+  if(!candidateInScope(candidate, user)){
     el.innerHTML = '<div class="empty">候補者が見つかりません</div>';
     return;
   }
 
+  const progressResult = await supabase.from('v3_progress').select('item_name,period,required,status').eq('candidate_id', candidateId).order('sort_order', { ascending: true, nullsFirst: false });
+  if(progressResult.error){
+    console.error(progressResult.error);
+    el.innerHTML = '<div class="empty">データの読み込みに失敗しました。ページを読み直してください</div>';
+    return;
+  }
+  const progress = progressResult.data;
   const byPeriod = {};
   (progress || []).forEach(p => {
     if(!byPeriod[p.period]) byPeriod[p.period] = [];
@@ -120,8 +124,9 @@ async function render(){
   `;
 }
 
-if(await requirePageAccess()){
-  render();
+const user = await requirePageAccess();
+if(user){
+  await render(user);
 }
 </script>
 </body>

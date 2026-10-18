@@ -99,7 +99,7 @@ body.auth-pending > *{visibility:hidden;}
     <hr class="divider">
 
     <h2>候補者を一括登録</h2>
-    <div class="bulk-desc">Excelから候補者ID・候補者名・選挙名・都道府県・GoogleスプレッドシートのURL（任意）の5列をコピーして、下の欄に貼り付けてください（タブ区切り）</div>
+    <div class="bulk-desc">Excelから候補者ID・候補者名・選挙名・都道府県・GoogleスプレッドシートのURL（任意）の5列をコピーして、下の欄に貼り付けてください（タブ区切り）。担当する都道府県の候補者だけ登録できます。</div>
     <textarea class="bulk-textarea" id="bulkText" placeholder="test-001&#9;テスト太郎&#9;テスト選挙&#9;東京都&#9;https://docs.google.com/spreadsheets/d/xxxxx/edit"></textarea>
     <button class="btn" id="bulkSubmitBtn" onclick="submitBulk()">一括登録</button>
     <div class="bulk-result" id="bulkResult"></div>
@@ -119,6 +119,7 @@ body.auth-pending > *{visibility:hidden;}
 <script src="prefectures.js"></script>
 <script type="module">
 import { requirePageAccess, syncApi, usersApi, ROLE_LABELS } from './auth.js';
+import { assignedPrefecture, setPrefectureSelect } from './prefecture-scope.js';
 
 const CODE_PATTERN = /^[A-Za-z0-9-]+$/;
 const SHEET_URL_PATTERN = /\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/;
@@ -150,17 +151,11 @@ function validateBulkRow(code, name, election, prefecture){
   if(!CODE_PATTERN.test(code)) return '候補者IDに使えない文字が含まれています（半角英数字とハイフンのみ）';
   if(!name) return '候補者名が未入力です';
   if(!election) return '選挙名が未入力です';
-  if(!PREFECTURE_SET.has(prefecture)) return '都道府県名が不正です';
+  if(!assignedPrefecture(currentUser) || prefecture !== assignedPrefecture(currentUser)) return '担当する都道府県の候補者だけ登録できます';
   return null;
 }
 
 const prefectureSelect = document.getElementById('prefecture');
-PREFECTURES.forEach(pref => {
-  const opt = document.createElement('option');
-  opt.value = pref;
-  opt.textContent = pref;
-  prefectureSelect.appendChild(opt);
-});
 
 function showMessage(text, type){
   const el = document.getElementById('formMessage');
@@ -169,6 +164,7 @@ function showMessage(text, type){
 }
 
 async function submitCandidate(){
+  if(!currentUser || currentUser.role !== 'admin' || !assignedPrefecture(currentUser)) return;
   const codeInput = document.getElementById('candidateCode');
   const nameInput = document.getElementById('candidateName');
   const electionInput = document.getElementById('electionName');
@@ -183,6 +179,10 @@ async function submitCandidate(){
 
   if(!code || !name || !election || !prefecture){
     showMessage('すべての項目を入力してください', 'error');
+    return;
+  }
+  if(prefecture !== assignedPrefecture(currentUser)){
+    showMessage('担当する都道府県の候補者だけ登録できます', 'error');
     return;
   }
   if(!CODE_PATTERN.test(code)){
@@ -218,7 +218,7 @@ async function submitCandidate(){
     codeInput.value = '';
     nameInput.value = '';
     electionInput.value = '';
-    prefectureSelect.value = '';
+    setPrefectureSelect(prefectureSelect, currentUser);
     sheetIdInput.value = '';
   } catch (e) {
     showMessage('登録に失敗しました', 'error');
@@ -226,8 +226,6 @@ async function submitCandidate(){
     submitBtn.disabled = false;
   }
 }
-
-const PREFECTURE_SET = new Set(PREFECTURES);
 
 function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
@@ -260,6 +258,7 @@ function renderBulkResult({ insertedCount, formatErrorEntries, duplicateEntries,
 }
 
 async function submitBulk(){
+  if(!currentUser || currentUser.role !== 'admin' || !assignedPrefecture(currentUser)) return;
   const textarea = document.getElementById('bulkText');
   const bulkSubmitBtn = document.getElementById('bulkSubmitBtn');
   const resultEl = document.getElementById('bulkResult');
@@ -281,7 +280,7 @@ async function submitBulk(){
     const code = (cols[0] || '').trim();
     const name = (cols[1] || '').trim();
     const election = (cols[2] || '').trim();
-    const prefecture = (cols[3] || '').trim();
+    const prefecture = (cols[3] || '').replace(/^ +| +$/g, '');
     const sheetInput = cols[4] || '';
 
     const label = code || `(${i + 1}行目: ID未入力)`;
@@ -420,12 +419,25 @@ function roleSelect(selected){
 }
 
 async function loadUsers(){
+  if(!currentUser || currentUser.role !== 'admin' || !assignedPrefecture(currentUser)) return;
   const listEl = document.getElementById('usersList');
   const reloadBtn = document.getElementById('usersReloadBtn');
   reloadBtn.disabled = true;
   try {
-    const { users } = await usersApi('list');
-    renderUsers(Array.isArray(users) ? users : []);
+    const users = [];
+    const seenCursors = new Set();
+    let cursor = null;
+    do {
+      const page = await usersApi('list', cursor ? { cursor } : {});
+      if(!Array.isArray(page.users)) throw new Error('利用者一覧の取得に失敗しました');
+      users.push(...page.users.filter(user => user.prefecture_code === currentUser.prefecture_code));
+      cursor = page.next_cursor ?? null;
+      if(cursor !== null){
+        if(typeof cursor !== 'string' || !cursor || seenCursors.has(cursor)) throw new Error('利用者一覧の取得に失敗しました');
+        seenCursors.add(cursor);
+      }
+    } while(cursor !== null);
+    renderUsers(users);
   } catch (e) {
     listEl.innerHTML = '';
     listEl.appendChild(node('div', 'users-empty', e.message || '利用者一覧の取得に失敗しました'));
@@ -554,7 +566,8 @@ Object.assign(window, { submitCandidate, submitBulk });
 
 currentUser = await requirePageAccess({ adminOnly: true });
 if(currentUser){
-  loadUsers();
+  setPrefectureSelect(prefectureSelect, currentUser);
+  await loadUsers();
 }
 </script>
 </body>

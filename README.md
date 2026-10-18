@@ -4,15 +4,15 @@
 
 ## ページ構成
 
-- `index.html` — ログイン画面（「Google でログイン」のみ）。ログイン済みで有効な利用者は `list.html`（または `?next=` で指定された元のページ）へ移動します。未登録・承認待ち・無効の利用者には、状態ごとの画面を出します。
-- `list.html` — 候補者一覧。`v3_candidates` を全件取得し、`v3_progress` の集計から達成率（%）を算出して、候補者名・選挙名とともに一覧表示します。候補者名をクリックすると詳細ページへ移動します。管理者には「候補者を登録」・編集・削除を表示します。
+- `index.html` — ログイン画面（「Google でログイン」のみ）。ログイン済み・有効・担当県割当済みの利用者は `list.html`（または `?next=` で指定された元のページ）へ移動します。未登録・承認待ち・無効・担当県未設定の利用者には、状態ごとの画面を出します。
+- `list.html` — 担当県の候補者一覧。RLSで許可された担当県の `v3_candidates` をページング取得し、同じ範囲の `v3_progress` の集計から達成率（%）を算出します。候補者名をクリックすると詳細ページへ移動します。管理者には同県の「候補者を登録」・編集・削除を表示します。
 - `detail.html?id=<candidate_id>` — 候補者詳細。対象候補者の `v3_progress` を「政治活動期間」「選挙期間」に分けて、項目ごとにステータス（未着手／着手中／納品完了）を表示します。
 - `admin.html` — 管理者専用。候補者の登録・一括登録と、利用者管理（承認・無効化・再有効化・役割変更・削除）。管理者以外が開くと `list.html` に戻します。
 - `privacy.html` — プライバシーポリシー（ログイン不要）。
 - `auth.js` — ログインの共通処理（ESモジュール）。Supabase クライアントの作成、Google ログイン、利用者の状態の確認、状態ごとの画面、ヘッダーの表示名・ログアウト。
 - `config.js` — Supabase接続情報（URL・Publishable key）。
 - `status-map.js` — `v3_progress.status` の生の文字列を「未着手／着手中／納品完了」の3段階に変換するマッピング（list.htmlとdetail.html共通）。未知のステータス値は保険的に「着手中」として扱います。
-- `supabase/migrations/` — DB の変更（SQL Editor で手動実行）。`0001_v3_users.sql`（利用者テーブルと判定関数）、`0002_restrict_v3_reads.sql`（読み取りを有効な利用者だけにする RLS）。
+- `supabase/migrations/` — DB の変更（SQL Editor で手動実行）。`0001_v3_users.sql`（利用者テーブルと判定関数）、`0002_restrict_v3_reads.sql`（有効利用者のRLS）、`20261018053254_restrict_prefecture_access.sql`（担当県RLSと管理RPC）。最新の反映順は担当県の手順を参照。
 - `supabase/functions/` — Edge Function。`v3-users`（利用者管理）、`v3-sync-progress`（進捗の同期と候補者の登録・編集・削除）、`_shared/`（CORS・ログイン照合の共通処理）。
 
 ## 達成率の算出方法
@@ -141,3 +141,7 @@ npx supabase functions list --project-ref hhlqgxmhbpfhjnjmradq   # verify_jwt: t
 - `SUPABASE_SECRET_KEY` — 候補者一覧の読み取り用の secret key（`sb_secret_`）。RLS で読み取りがログイン済みの利用者に限られるため、同期スクリプトはこのキーで読む。Edge Function には送らない
 - `GOOGLE_SERVICE_ACCOUNT_KEY_B64` — サービスアカウント鍵（`service-account-key.json`）の中身を base64 にしたもの（推奨）
 - `GOOGLE_SERVICE_ACCOUNT_KEY` — サービスアカウント鍵の中身をそのままJSON文字列として登録（`_B64` が未設定のときに使う）
+
+## 担当県のアクセス制限
+
+県別RLS、管理API、作成者による担当県割当、テストと本番反映順は [担当県アクセス制限の手順](docs/prefecture-access.md) を参照してください。未割当は閲覧不可で、管理者にも全国閲覧の例外はありません。

@@ -1,6 +1,8 @@
-import { createClient } from "jsr:@supabase/supabase-js@2";
+import { createClient } from "jsr:@supabase/supabase-js@2.117.3";
 import { corsHeaders, withCors } from "../_shared/cors.ts";
-import { getAuthContext, requireAdmin } from "../_shared/auth.ts";
+import { getAuthContext, requireAdmin, type V3User } from "../_shared/auth.ts";
+import { PREFECTURE_NAMES, prefectureCodeFromName } from "../_shared/prefectures.ts";
+import { callScopedRpc, isObject, isUuid } from "../_shared/scoped-rpc.ts";
 import { type ExistingProgressRow, planOrphanCleanup } from "./cleanup.ts";
 
 interface ProgressItem {
@@ -70,7 +72,35 @@ function jsonResponse(body: unknown, status: number) {
   });
 }
 
-async function handleCreateCandidate(body: SyncRequestBody) {
+function candidatePayload(input: Record<string, unknown>, actor: V3User, create: boolean):
+  { ok: true; payload: Record<string, unknown> } | { ok: false; status: number; error: string } {
+  const payload: Record<string, unknown> = {};
+  for (const field of create ? ["candidate_code", "name", "election_name"] : ["name", "election_name"]) {
+    if (!create && input[field] === undefined) continue;
+    if (typeof input[field] !== "string" || !(input[field] as string).trim()) {
+      return { ok: false, status: 400, error: "必須項目を正しく入力してください" };
+    }
+    payload[field] = (input[field] as string).trim();
+  }
+  if (create || input.prefecture !== undefined) {
+    const code = prefectureCodeFromName(input.prefecture);
+    if (!code) return { ok: false, status: 400, error: "都道府県を正しく指定してください" };
+    if (code !== actor.prefecture_code) return { ok: false, status: 403, error: "担当都道府県以外は操作できません" };
+    payload.prefecture = PREFECTURE_NAMES[Number(code) - 1];
+  }
+  if (create || input.sheet_id !== undefined) {
+    if (input.sheet_id != null && typeof input.sheet_id !== "string") {
+      return { ok: false, status: 400, error: "シートIDが正しくありません" };
+    }
+    const sheetId = extractSheetId(input.sheet_id as string | null | undefined) || null;
+    if (sheetId === MASTER_SHEET_ID) return { ok: false, status: 400, error: "マスターシートのIDです" };
+    payload.sheet_id = sheetId;
+  }
+  if (Object.keys(payload).length === 0) return { ok: false, status: 400, error: "更新項目を指定してください" };
+  return { ok: true, payload };
+}
+
+async function handleCreateCandidate(body: SyncRequestBody, actor: V3User) {
   const inputs: CreateCandidateInput[] = Array.isArray(body.candidates)
     ? body.candidates
     : [{
@@ -81,131 +111,43 @@ async function handleCreateCandidate(body: SyncRequestBody) {
         sheet_id: body.sheet_id,
       }];
 
-  const results: Array<{ candidate_code: string; status: string; error?: string; reason?: string }> = [];
-
+  if (inputs.length === 0) return jsonResponse({ error: "候補者を指定してください" }, 400);
+  const payloads: Record<string, unknown>[] = [];
+  // Validate the entire batch before the first write, including every requested prefecture.
   for (const input of inputs) {
-    const candidateCode = input.candidate_code?.trim();
-    const name = input.name?.trim();
-    const electionName = input.election_name?.trim();
-    const prefecture = input.prefecture?.trim();
-    const sheetId = extractSheetId(input.sheet_id) || null;
-
-    if (!candidateCode || !name || !electionName || !prefecture) {
-      results.push({ candidate_code: candidateCode ?? "", status: "error", error: "必須項目が不足しています" });
-      continue;
-    }
-
-    if (sheetId === MASTER_SHEET_ID) {
-      results.push({
-        candidate_code: candidateCode,
-        status: "error",
-        error: "マスターシートのIDです",
-        reason: "master_sheet",
-      });
-      continue;
-    }
-
-    const { data: existing, error: existingError } = await supabase
-      .from("v3_candidates")
-      .select("id")
-      .eq("candidate_code", candidateCode)
-      .maybeSingle();
-
-    if (existingError) {
-      results.push({ candidate_code: candidateCode, status: "error", error: existingError.message });
-      continue;
-    }
-
-    if (existing) {
-      results.push({
-        candidate_code: candidateCode,
-        status: "error",
-        error: "この候補者IDは既に登録されています",
-        reason: "duplicate",
-      });
-      continue;
-    }
-
-    const { error: insertError } = await supabase
-      .from("v3_candidates")
-      .insert({
-        candidate_code: candidateCode,
-        name,
-        election_name: electionName,
-        prefecture,
-        sheet_id: sheetId,
-      });
-
-    if (insertError) {
-      results.push({ candidate_code: candidateCode, status: "error", error: insertError.message });
-      continue;
-    }
-
-    results.push({ candidate_code: candidateCode, status: "ok" });
+    if (!isObject(input)) return jsonResponse({ error: "候補者の指定が正しくありません" }, 400);
+    const checked = candidatePayload(input, actor, true);
+    if (!checked.ok) return jsonResponse({ error: checked.error }, checked.status);
+    payloads.push(checked.payload);
   }
-
+  const results: Array<{ candidate_code: string; status: string; error?: string; reason?: string }> = [];
+  for (const payload of payloads) {
+    const result = await callScopedRpc(supabase, "v3_manage_candidate", {
+      p_actor_id: actor.id, p_action: "createCandidate", p_candidate_id: null, p_payload: payload,
+    });
+    if (!result.ok && (result.status === 403 || result.status === 500)) {
+      return jsonResponse({ error: result.error, results }, result.status);
+    }
+    results.push(result.ok
+      ? { candidate_code: payload.candidate_code as string, status: "ok" }
+      : { candidate_code: payload.candidate_code as string, status: "error", error: result.error });
+  }
   const hasError = results.some((r) => r.status === "error");
   return jsonResponse({ results }, hasError ? 207 : 200);
 }
 
-async function handleDeleteCandidate(body: SyncRequestBody) {
-  const id = body.id;
-  if (!id) {
-    return jsonResponse({ error: "id is required" }, 400);
+async function handleCandidateMutation(body: SyncRequestBody, actor: V3User) {
+  if (!isUuid(body.id)) return jsonResponse({ error: "候補者IDが正しくありません" }, 400);
+  let payload: Record<string, unknown> = {};
+  if (body.action === "updateCandidate") {
+    const checked = candidatePayload(body as unknown as Record<string, unknown>, actor, false);
+    if (!checked.ok) return jsonResponse({ error: checked.error }, checked.status);
+    payload = checked.payload;
   }
-
-  const { error: progressError } = await supabase
-    .from("v3_progress")
-    .delete()
-    .eq("candidate_id", id);
-
-  if (progressError) {
-    return jsonResponse({ error: progressError.message }, 500);
-  }
-
-  const { error: candidateError } = await supabase
-    .from("v3_candidates")
-    .delete()
-    .eq("id", id);
-
-  if (candidateError) {
-    return jsonResponse({ error: candidateError.message }, 500);
-  }
-
-  return jsonResponse({ status: "ok" }, 200);
-}
-
-async function handleUpdateCandidate(body: SyncRequestBody) {
-  const id = body.id;
-  if (!id) {
-    return jsonResponse({ error: "id is required" }, 400);
-  }
-
-  const update: Record<string, unknown> = {};
-  if (body.name !== undefined) update.name = body.name;
-  if (body.election_name !== undefined) update.election_name = body.election_name;
-  if (body.prefecture !== undefined) update.prefecture = body.prefecture;
-  if (body.sheet_id !== undefined) {
-    const sheetId = extractSheetId(body.sheet_id) || null;
-    if (sheetId === MASTER_SHEET_ID) {
-      return jsonResponse({ error: "マスターシートのIDです" }, 400);
-    }
-    update.sheet_id = sheetId;
-  }
-
-  if (Object.keys(update).length === 0) {
-    return jsonResponse({ error: "no fields to update" }, 400);
-  }
-
-  const { error } = await supabase
-    .from("v3_candidates")
-    .update(update)
-    .eq("id", id);
-
-  if (error) {
-    return jsonResponse({ error: error.message }, 500);
-  }
-
+  const result = await callScopedRpc(supabase, "v3_manage_candidate", {
+    p_actor_id: actor.id, p_action: body.action, p_candidate_id: body.id, p_payload: payload,
+  });
+  if (!result.ok) return jsonResponse({ error: result.error }, result.status);
   return jsonResponse({ status: "ok" }, 200);
 }
 
@@ -220,37 +162,28 @@ async function handle(req: Request): Promise<Response> {
 
   let body: SyncRequestBody;
   try {
-    body = await req.json();
+    const parsed = await req.json();
+    if (!isObject(parsed)) return jsonResponse({ error: "invalid json body" }, 400);
+    body = parsed as SyncRequestBody;
   } catch {
     return jsonResponse({ error: "invalid json body" }, 400);
   }
 
   const action = body.action ?? "sync";
+  if (typeof action !== "string" || ![...ADMIN_ACTIONS, "sync"].includes(action)) {
+    return jsonResponse({ error: "操作が正しくありません" }, 400);
+  }
 
   if (ADMIN_ACTIONS.includes(action)) {
     const admin = requireAdmin(await getAuthContext(supabase, req));
     if (!admin.ok) {
       return jsonResponse({ error: admin.error }, admin.status);
     }
+    if (action === "createCandidate") return await handleCreateCandidate(body, admin.actor);
+    return await handleCandidateMutation(body, admin.actor);
   } else if (!V3_SYNC_TOKEN || body.token !== V3_SYNC_TOKEN) {
     // sync（action 省略時を含む）と未知の action は、今までどおりトークンで照合する
     return jsonResponse({ error: "unauthorized" }, 401);
-  }
-
-  if (action === "createCandidate") {
-    return await handleCreateCandidate(body);
-  }
-
-  if (action === "deleteCandidate") {
-    return await handleDeleteCandidate(body);
-  }
-
-  if (action === "updateCandidate") {
-    return await handleUpdateCandidate(body);
-  }
-
-  if (action !== "sync") {
-    return jsonResponse({ error: `unknown action: ${action}` }, 400);
   }
 
   const records: SyncRecord[] = body.records ??
@@ -495,5 +428,10 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders(req) });
   }
-  return withCors(req, await handle(req));
+  try {
+    return withCors(req, await handle(req));
+  } catch {
+    console.error("v3-sync-progress request failed");
+    return withCors(req, jsonResponse({ error: "internal error" }, 500));
+  }
 });
