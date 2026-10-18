@@ -28,7 +28,7 @@
 
 const RT_SUPABASE_URL = 'https://hhlqgxmhbpfhjnjmradq.supabase.co';
 const RT_SYNC_URL = RT_SUPABASE_URL + '/functions/v1/v3-sync-progress';
-const RT_SUPABASE_KEY = 'sb_publishable_UnDHy2FKZHZkUTiSAR8isg_V8B3w4Eb';
+const RT_SUPABASE_KEY = 'YOUR_SUPABASE_PUBLISHABLE_KEY';
 
 const RT_INFO_SHEET_NAME = '選挙情報・SNS情報ページ';
 const RT_LIST_SHEET_NAME = '広報物一覧・進捗確認ページ';

@@ -36,10 +36,10 @@ body.auth-pending > *{visibility:hidden;}
   <a class="back-link" href="list.html">← 一覧に戻る</a>
 </div>
 <div class="content" id="content"><div class="loading">読み込み中...</div></div>
-<script src="config.js"></script>
+<script src="config.js?v=public-config-1"></script>
 <script src="status-map.js"></script>
 <script type="module">
-import { requirePageAccess, getSupabase } from './auth.js';
+import { requirePageAccess, getSupabase } from './auth.js?v=public-config-1';
 
 const STAGE_CLASS = { '未着手': 'stage-todo', '着手中': 'stage-doing', '納品完了': 'stage-done' };
 const PERIOD_ORDER = ['政治活動期間', '選挙期間'];
