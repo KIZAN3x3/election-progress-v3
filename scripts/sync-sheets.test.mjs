@@ -143,7 +143,10 @@ test("successful sync keeps payloads and counts while hiding personal data and c
   assert.deepEqual(read.headers, { apikey: canary + "_secret" });
   const write = result.requests.find((r) => r.path === "/functions/v1/v3-sync-progress");
   assert.ok(write);
-  assert.equal(write.headers.Authorization, "Bearer " + canary + "_publishable");
+  assert.deepEqual(write.headers, {
+    "Content-Type": "application/json; charset=utf-8",
+    apikey: canary + "_publishable",
+  });
   assert.equal(write.body.token, canary + "_token");
   assert.equal(write.body.fullSheet, true);
   assert.equal(write.body.modifiedTime, "2026-10-16T00:00:00Z");
