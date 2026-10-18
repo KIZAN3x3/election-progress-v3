@@ -34,9 +34,9 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
   <div class="login-error" id="loginError"></div>
 </div>
 <div class="privacy-link"><a href="privacy.html">プライバシーポリシー</a></div>
-<script src="config.js"></script>
+<script src="config.js?v=public-config-1"></script>
 <script type="module">
-import { loadAccount, startGoogleLogin, showAccountGate, isInAppBrowser, takeLoginMessage, safeNextPage } from './auth.js';
+import { loadAccount, startGoogleLogin, showAccountGate, isInAppBrowser, takeLoginMessage, safeNextPage } from './auth.js?v=public-config-1';
 
 const loginSub = document.getElementById('loginSub');
 const loginBtn = document.getElementById('googleLoginBtn');
