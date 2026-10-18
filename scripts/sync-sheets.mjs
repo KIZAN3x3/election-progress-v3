@@ -111,7 +111,7 @@ function collectItems(rows) {
 
 // GASのbuildRecordsと同じロジック：items配列をperiodごとにまとめる
 function buildRecords(candidateCode, items) {
-  const byPeriod = {};
+  const byPeriod = Object.create(null);
   items.forEach((item) => {
     if (!byPeriod[item.period]) byPeriod[item.period] = [];
     byPeriod[item.period].push({
@@ -252,6 +252,9 @@ async function syncOneCandidate(sheetsApi, candidate, modifiedTime) {
   const errorResult = (body.results || []).find((r) => r.status === "error");
   if (errorResult) {
     throw new SyncError("SYNC_RESULT_ERROR");
+  }
+  if (Array.isArray(body.cleanup) && body.cleanup.some((result) => result?.error)) {
+    throw new SyncError("SYNC_CLEANUP_FAILED");
   }
 
   return body;

@@ -169,7 +169,7 @@ for(const [mode, classification] of [
   const res = await f.send({ token:'fake-machine-token',fullSheet:true,modifiedTime:'2026-10-18T00:00:00Z',records:[
     { candidate_code:code,period:'new',items:[{ item_name:'item-1',status:'未着手' }] }
   ] }, { jwt:null });
-  assert.equal(res.status, mode === 'throw' ? 500 : 200);
+  assert.equal(res.status, mode === 'throw' ? 500 : ['read-error','delete-error'].includes(mode) ? 207 : 200);
   assert(f.logs.some(log => log.args[0] === classification));
   assertSafeLogs(f.logs);
   const data = await res.json();
@@ -179,14 +179,119 @@ for(const [mode, classification] of [
   }
   if(mode === 'skip') assert(data.cleanup[0].warning.includes(oldRow.period));
   if(mode === 'throw') assert.deepEqual(data, { error:'internal error' });
+  if(['read-error','delete-error'].includes(mode)){
+    assert(data.cleanup[0].error);
+    assert.equal(f.calls.filter(call => call.values?.sheet_modified_at).length, 0);
+  }
   assert.equal(res.headers.get('Access-Control-Allow-Origin'), 'https://kizan3x3.github.io');
 });
 
 test('unexpected handler failures are caught without logging arbitrary exception contents', async () => {
-  const f = fixture();
-  const res = await f.send(null, { jwt:null });
+  const f = fixture({ query: () => { throw new Error(poison); } });
+  const res = await f.send({ action:'deleteCandidate',id:candidateId });
   assert.equal(res.status, 500);
   assert.deepEqual(await res.json(), { error:'internal error' });
   assert.deepEqual(f.logs.map(log => log.args[0]), ['SYNC_REQUEST_FAILED']);
   assertSafeLogs(f.logs);
+});
+
+const validRecord = () => ({ candidate_code:code,period:'new',items:[{ item_name:'new-item',required:true,status:'未着手' }] });
+
+for(const body of [null, [], 'text', 1]) test(`invalid top-level JSON ${JSON.stringify(body)} is a fixed 400 before DB access`, async () => {
+  const f = fixture();
+  const res = await f.send(body, { jwt:null });
+  assert.equal(res.status, 400);
+  assert.deepEqual(await res.json(), { error:'invalid json body' });
+  assert.equal(f.calls.length, 0);
+});
+
+for(const [label, fields] of [
+  ['records object',{ records:{} }], ['empty records',{ records:[] }], ['null record',{ records:[validRecord(),null] }],
+  ['numeric code',{ records:[{ ...validRecord(),candidate_code:2 }] }],
+  ['missing period',{ records:[{ ...validRecord(),period:undefined }] }],
+  ['empty items',{ records:[{ ...validRecord(),items:[] }] }],
+  ['null item',{ records:[validRecord(),{ ...validRecord(),period:'later',items:[null] }] }],
+  ['blank item name',{ records:[{ ...validRecord(),items:[{ item_name:' ',status:'' }] }] }],
+  ['non-string status',{ records:[{ ...validRecord(),items:[{ item_name:'item',status:3 }] }] }],
+  ['non-boolean required',{ records:[{ ...validRecord(),items:[{ item_name:'item',required:'true',status:'' }] }] }],
+  ['duplicate item',{ records:[{ ...validRecord(),items:[{ item_name:'same',status:'' },{ item_name:'same',status:'完了' }] }] }],
+  ['duplicate candidate/period',{ records:[validRecord(),validRecord()] }],
+  ['invalid fullSheet',{ records:[validRecord()],fullSheet:'true' }],
+  ['invalid modifiedTime',{ records:[validRecord()],modifiedTime:'not-a-date' }]
+]) test(`entire payload validation rejects ${label} before reads, writes or cleanup`, async () => {
+  const f = fixture();
+  const res = await f.send({ token:'fake-machine-token',fullSheet:true,modifiedTime:'2026-10-18T00:00:00Z',...fields }, { jwt:null });
+  assert.equal(res.status, 400);
+  assert.deepEqual(await res.json(), { error:'invalid sync payload' });
+  assert.equal(f.calls.length, 0);
+  assertSafeLogs(f.logs);
+});
+
+test('upsert failure retains stale progress and cannot reach cleanup or advance the cursor', async () => {
+  let oldRowPresent = true;
+  const f = fixture({ query: request => {
+    if(request.table === 'v3_candidates' && request.operation === 'select') return { data:{ id:candidateId },error:null };
+    if(request.operation === 'select') return { data:[{ item_name:'old-item',required:true,status:'未着手' }],error:null };
+    if(request.operation === 'upsert') return { data:null,error:{ message:poison } };
+    if(request.operation === 'delete') oldRowPresent = false;
+    return { data:null,error:null };
+  } });
+  const res = await f.send({ token:'fake-machine-token',fullSheet:true,modifiedTime:'2026-10-18T00:00:00Z',records:[validRecord()] }, { jwt:null });
+  assert.equal(res.status, 207);
+  assert.equal(oldRowPresent, true);
+  assert.equal(f.calls.filter(call => call.operation === 'delete').length, 0);
+  assert.equal(f.calls.filter(call => call.values?.sheet_modified_at).length, 0);
+  assert.equal(f.calls.filter(call => call.columns === 'id, period, item_name, status').length, 0);
+});
+
+test('replacement upsert precedes stale deletion and a later delete failure prevents cleanup/cursor', async () => {
+  const f = fixture({ query: request => {
+    if(request.table === 'v3_candidates' && request.operation === 'select') return { data:{ id:candidateId },error:null };
+    if(request.operation === 'select') return { data:[{ item_name:'old-item',required:true,status:'未着手' }],error:null };
+    if(request.operation === 'delete') return { data:null,error:{ message:poison } };
+    return { data:null,error:null };
+  } });
+  const res = await f.send({ token:'fake-machine-token',fullSheet:true,modifiedTime:'2026-10-18T00:00:00Z',records:[validRecord()] }, { jwt:null });
+  assert.equal(res.status, 207);
+  assert.deepEqual(f.calls.filter(call => ['upsert','delete'].includes(call.operation)).map(call => call.operation), ['upsert','delete']);
+  assert.equal(f.calls.filter(call => call.values?.sheet_modified_at).length, 0);
+  assert.equal(f.calls.filter(call => call.columns === 'id, period, item_name, status').length, 0);
+});
+
+test('valid legacy payload and arbitrary reserved period names retain their existing success contract', async () => {
+  const run = async body => {
+    const f = fixture({ query: request => request.table === 'v3_candidates' && request.operation === 'select'
+      ? { data:{ id:candidateId },error:null } : { data:request.operation === 'select' ? [] : null,error:null } });
+    const res = await f.send({ token:'fake-machine-token',...body }, { jwt:null });
+    assert.equal(res.status, 200);
+    return { f,data:await res.json() };
+  };
+  const legacy = await run({ ...validRecord(),modifiedTime:null });
+  assert.equal(legacy.data.results[0].status, 'ok');
+  const periods = ['__proto__','constructor','toString',' 任意の見出し\n'];
+  const { f,data } = await run({ records:periods.map(period => ({ ...validRecord(),period })) });
+  assert.equal(data.results.length, periods.length);
+  assert.deepEqual(f.calls.filter(call => call.operation === 'upsert').map(call => call.values[0].period), periods);
+});
+
+for(const failure of ['error','not_found']) for(const failedLookup of [1,2]) test(`candidate lookup ${failure} in period ${failedLookup} cannot be hidden by the other successful period`, async () => {
+  let lookups = 0;
+  const f = fixture({ query: request => {
+    if(request.table === 'v3_candidates' && request.operation === 'select'){
+      lookups++;
+      if(lookups === failedLookup) return { data:null,error:failure === 'error' ? { message:poison } : null };
+      return { data:{ id:candidateId },error:null };
+    }
+    return { data:request.operation === 'select' ? [] : null,error:null };
+  } });
+  const res = await f.send({ token:'fake-machine-token',fullSheet:true,modifiedTime:'2026-10-18T00:00:00Z',
+    records:[{ ...validRecord(),period:'one' },{ ...validRecord(),period:'two' }] }, { jwt:null });
+  assert.equal(res.status, failure === 'error' ? 207 : 200);
+  const data = await res.json();
+  assert.equal(data.results.filter(row => row.status === 'ok').length, 1);
+  assert.equal(data.results.filter(row => row.status === failure).length, 1);
+  assert(data.cleanup[0].skipped);
+  assert.equal(f.calls.filter(call => call.columns === 'id, period, item_name, status').length, 0);
+  assert.equal(f.calls.filter(call => call.operation === 'delete').length, 0);
+  assert.equal(f.calls.filter(call => call.values?.sheet_modified_at).length, 0);
 });
