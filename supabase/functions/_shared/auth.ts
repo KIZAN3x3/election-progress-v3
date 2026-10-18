@@ -1,4 +1,4 @@
-import type { SupabaseClient, User } from "jsr:@supabase/supabase-js@2";
+import type { SupabaseClient, User } from "jsr:@supabase/supabase-js@2.117.3";
 
 export interface V3User {
   id: string;
