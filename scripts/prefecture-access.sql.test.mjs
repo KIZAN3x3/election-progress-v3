@@ -404,6 +404,37 @@ describe('prefecture SQL boundaries on real in-memory PostgreSQL', { concurrency
     assert.equal(await scalar(tx, 'select count(*)::int from public.v3_users where id=$1', [user.aichiViewer]), 1);
   }));
 
+  for (const action of ['disable', 'set_role', 'delete']) {
+    test(`a regional admin cannot ${action} themselves even with another active regional admin`, () => scenario(async (tx) => {
+      await asRole(tx, 'service_role');
+      const result = await usersRpc(tx, user.tokyoAdmin, action, user.tokyoAdmin, action === 'set_role' ? 'viewer' : null);
+      assertRejected(result, [400]);
+      assert.equal(result.code, 'SELF_CHANGE');
+      assert.deepEqual((await tx.query('select status,role,prefecture_code from public.v3_users where id=$1', [user.tokyoAdmin])).rows[0],
+        { status: 'active', role: 'admin', prefecture_code: '13' });
+      assert.equal(await scalar(tx, `select count(*)::int from public.v3_users where status='active' and role='admin' and prefecture_code='13'`), 2);
+    }));
+  }
+
+  test('setting another user to their existing role is rejected without changing approval audit', () => scenario(async (tx) => {
+    await asRole(tx, 'service_role');
+    const original = await scalar(tx, 'select to_jsonb(u) from public.v3_users u where id=$1', [user.secondTokyoAdmin]);
+    const result = await usersRpc(tx, user.tokyoAdmin, 'set_role', user.secondTokyoAdmin, 'admin');
+    assertRejected(result, [400]);
+    assert.equal(result.code, 'NO_CHANGE');
+    assert.deepEqual(await scalar(tx, 'select to_jsonb(u) from public.v3_users u where id=$1', [user.secondTokyoAdmin]), original);
+  }));
+
+  test('reenabling a same-prefecture user retains the original approval timestamp and actor', () => scenario(async (tx) => {
+    await tx.query(`update public.v3_users set approved_at='2020-01-02T03:04:05Z',approved_by=$1 where id=$2`,
+      [user.secondTokyoAdmin, user.disabledTokyo]);
+    const original = (await tx.query('select approved_at::text,approved_by from public.v3_users where id=$1', [user.disabledTokyo])).rows[0];
+    await asRole(tx, 'service_role');
+    assert.equal((await usersRpc(tx, user.tokyoAdmin, 'enable', user.disabledTokyo)).ok, true);
+    assert.deepEqual((await tx.query('select approved_at::text,approved_by from public.v3_users where id=$1', [user.disabledTokyo])).rows[0], original);
+    assert.equal(await scalar(tx, 'select status from public.v3_users where id=$1', [user.disabledTokyo]), 'active');
+  }));
+
   test('last active admin is protected per prefecture even when other regions have admins', () => scenario(async (tx) => {
     await asRole(tx, 'service_role');
     for (const action of ['disable', 'delete', 'set_role']) {

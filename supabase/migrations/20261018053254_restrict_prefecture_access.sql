@@ -197,9 +197,18 @@ begin
       and u.prefecture_code=actor.prefecture_code and u.status='active' and u.role='admin') then
     return jsonb_build_object('ok',false,'status',400,'code','LAST_ADMIN','error','担当県の最後の管理者は停止・降格・削除できません');
   end if;
+  -- Preserve the existing API's self-management guard as well as last-admin safety.
+  if target.id=actor.id and p_action in ('disable','set_role','delete') then
+    return jsonb_build_object('ok',false,'status',400,'code','SELF_CHANGE','error','自分自身の停止・役割変更・削除はできません');
+  end if;
+  if p_action='set_role' and p_role=target.role then
+    return jsonb_build_object('ok',false,'status',400,'code','NO_CHANGE','error','すでにその役割です');
+  end if;
   case p_action
     when 'approve' then update public.v3_users set status='active',role=p_role,approved_at=now(),approved_by=actor.id where id=target.id;
-    when 'enable' then update public.v3_users set status='active',approved_at=now(),approved_by=actor.id where id=target.id;
+    when 'enable' then update public.v3_users set status='active',
+      approved_at=coalesce(approved_at,now()),
+      approved_by=case when approved_at is null then actor.id else approved_by end where id=target.id;
     when 'disable' then update public.v3_users set status='disabled' where id=target.id;
     when 'set_role' then update public.v3_users set role=p_role where id=target.id;
     when 'delete' then
