@@ -161,7 +161,8 @@ function renderList(prefecture){
 
   el.innerHTML = filtered.map(c => {
     const stats = statsByCandidate[c.id] || { total: 0, done: 0 };
-    const rate = stats.total > 0 ? Math.round((stats.done / stats.total) * 100) : 0;
+    // 必要項目が0件の候補者は進捗率を出さず「-」にする
+    const rate = stats.total > 0 ? Math.round((stats.done / stats.total) * 100) : null;
     return `<div class="candidate-card" onclick="location.href='detail.html?id=${c.id}'">
       <div class="candidate-info">
         <div class="candidate-name">${escapeHtml(c.name)}</div>
@@ -169,8 +170,8 @@ function renderList(prefecture){
         <div class="candidate-updated">${formatLastUpdated(c.last_updated_at)}</div>
       </div>
       <div class="candidate-rate">
-        <div class="rate-bar"><div class="rate-bar-fill" style="width:${rate}%"></div></div>
-        <div class="rate-num">${rate}%</div>
+        <div class="rate-bar"><div class="rate-bar-fill" style="width:${rate ?? 0}%"></div></div>
+        <div class="rate-num">${rate === null ? '-' : `${rate}%`}</div>
       </div>
       ${isAdmin ? `<button class="edit-btn" onclick="event.stopPropagation();openEditModal('${c.id}')">編集</button>` : ''}
       ${isAdmin ? `<button class="delete-btn" onclick="event.stopPropagation();deleteCandidate('${c.id}')">削除</button>` : ''}
@@ -197,7 +198,7 @@ async function render(){
   const supabase = getSupabase();
   const [candidatesResult, progressResult] = await Promise.all([
     fetchAllRows(() => supabase.from('v3_candidates').select('id,candidate_code,name,election_name,prefecture,sheet_id,last_updated_at').order('name', { ascending: true }).order('id', { ascending: true })),
-    fetchAllRows(() => supabase.from('v3_progress').select('candidate_id,status').order('id', { ascending: true }))
+    fetchAllRows(() => supabase.from('v3_progress').select('candidate_id,required,status').order('id', { ascending: true }))
   ]);
 
   if(candidatesResult.error || progressResult.error){
@@ -212,6 +213,8 @@ async function render(){
 
   statsByCandidate = {};
   (progress || []).forEach(p => {
+    // 「不要」の項目は進捗率の分母・分子のどちらにも数えない
+    if(p.required !== true) return;
     if(!statsByCandidate[p.candidate_id]) statsByCandidate[p.candidate_id] = { total: 0, done: 0 };
     const stats = statsByCandidate[p.candidate_id];
     stats.total++;

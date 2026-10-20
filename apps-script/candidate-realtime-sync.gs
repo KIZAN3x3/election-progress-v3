@@ -71,7 +71,8 @@ function rtCollectItems_(rows) {
       items.push({
         period: currentPeriod,
         item_name: String(colB).trim(),
-        required: String(colC).trim() === '必要',
+        // 「不要」だけを対象外にする。空欄やその他の値は「必要」として扱う
+        required: String(colC == null ? '' : colC).trim() !== '不要',
         status: colD ? String(colD).trim() : ''
       });
     }

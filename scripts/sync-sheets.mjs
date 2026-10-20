@@ -21,6 +21,8 @@ const MODIFIED_TIME_CHECK_CONCURRENCY = 5;
 const SYNC_REQUEST_TIMEOUT_MS = 30000;
 const SYNC_REQUEST_RETRIES = 1;
 const FAILURE_RATIO_THRESHOLD = 0.5;
+// "true" のときはmodifiedTimeの比較を行わず、全候補者を再同期する（判定ロジック変更後の一括反映用）
+const FORCE_FULL_SYNC = process.env.FORCE_FULL_SYNC === "true";
 
 // 公開Actionsログには固定の分類・HTTPステータス・件数だけを出す。
 // 外部APIの例外やレスポンスには個人情報・URL・認証情報が含まれ得る。
@@ -100,7 +102,8 @@ function collectItems(rows) {
       items.push({
         period: currentPeriod,
         item_name: String(colB).trim(),
-        required: String(colC).trim() === "必要",
+        // 「不要」だけを対象外にする。空欄やその他の値は「必要」として扱う
+        required: String(colC ?? "").trim() !== "不要",
         status: colD ? String(colD).trim() : "",
       });
     }
@@ -296,6 +299,9 @@ async function main() {
 
   const candidates = await fetchCandidatesWithSheet();
   console.log(`対象候補者: ${candidates.length}件`);
+  if (FORCE_FULL_SYNC) {
+    console.log("全件強制同期モード: modifiedTimeの比較を行わず全候補者を同期します");
+  }
 
   const modifiedTimes = await fetchModifiedTimes(driveApi, candidates);
 
@@ -312,7 +318,7 @@ async function main() {
     const fetchedMs = Date.parse(modifiedTime);
     const storedMs = candidate.sheet_modified_at ? Date.parse(candidate.sheet_modified_at) : NaN;
     // sheet_modified_at未設定、またはDrive側が新しい場合のみ要同期とする
-    const changed = Number.isNaN(storedMs) || fetchedMs > storedMs;
+    const changed = FORCE_FULL_SYNC || Number.isNaN(storedMs) || fetchedMs > storedMs;
     if (changed) {
       toSync.push({ ...candidate, _fetchedModifiedTime: modifiedTime });
     } else {

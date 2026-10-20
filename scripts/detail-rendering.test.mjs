@@ -12,7 +12,7 @@ const detailSource = detailHtml.match(/<script type="module">([\s\S]*?)<\/script
   .replace(/^import[^\n]+\r?\n/gm, '');
 const id = '10000000-0000-4000-8000-000000000001';
 const candidate = { id, name: '合成候補者', election_name: '合成選挙' };
-const row = (period, item_name = '合成項目', status = '未実施', required = false) =>
+const row = (period, item_name = '合成項目', status = '未実施', required = true) =>
   ({ period, item_name, status, required });
 
 async function fixture({ candidates = [candidate], progress = [], search = `?id=${id}`,
@@ -58,8 +58,8 @@ const periodTitles = html => [...html.matchAll(/<div class="period-title">([^<]*
 
 test('ordinary headings keep their existing order, item order and status badges', async () => {
   const f = await fixture({ progress: [
-    row('追加B', '追加B項目'), row('選挙期間', '選挙項目', '納品済み', true),
-    row('政治活動期間', '政治項目1'), row('追加A', '追加A項目'),
+    row('追加B', '追加B項目', '未実施', false), row('選挙期間', '選挙項目', '納品済み'),
+    row('政治活動期間', '政治項目1'), row('追加A', '追加A項目', '未実施', false),
     row('政治活動期間', '政治項目2', '原稿作成中'),
   ] });
   await f.api.render();
@@ -69,9 +69,37 @@ test('ordinary headings keep their existing order, item order and status badges'
   assert.match(html, /stage-badge stage-todo/);
   assert.match(html, /stage-badge stage-doing/);
   assert.match(html, /stage-badge stage-done/);
-  assert.equal((html.match(/class="required-badge"/g) || []).length, 1);
+  assert.equal((html.match(/class="required-badge"/g) || []).length, 3);
+  assert.equal((html.match(/stage-badge stage-unneeded/g) || []).length, 2);
   assert.match(html, /合成候補者/);
   assert.match(html, /合成選挙/);
+});
+
+const itemRows = html => [...html.matchAll(/<div class="item-row">([\s\S]*?)<\/div>\s*<\/div>/g)].map(match => match[1]);
+
+test('required items show 必須 and their status; 不要 items show only a gray 不要 badge', async () => {
+  const f = await fixture({ progress: [
+    row('選挙期間', '必要項目', '未実施', true),
+    row('選挙期間', '不要項目', '未実施', false),
+    row('選挙期間', '不要だが進行中の項目', '原稿作成中', false),
+  ] });
+  await f.api.render();
+  const [needed, unneeded, unneededWithStatus] = itemRows(f.content.innerHTML);
+  assert.match(needed, /class="required-badge">必須</);
+  assert.match(needed, /stage-badge stage-todo">未実施/);
+  assert.doesNotMatch(needed, /stage-unneeded/);
+  for (const item of [unneeded, unneededWithStatus]) {
+    assert.match(item, /<div class="stage-badge stage-unneeded">不要/);
+    assert.doesNotMatch(item, /required-badge|stage-todo|stage-doing|stage-done|未実施|原稿作成中/);
+  }
+});
+
+test('the 不要 badge style is distinct from the 未着手・着手中・完了 colors', () => {
+  const style = detailHtml.match(/\.stage-unneeded\{([^}]*)\}/)[1];
+  for (const stageColor of ['var(--todo)', 'var(--doing)', 'var(--done)']) {
+    assert.equal(style.includes(stageColor), false);
+  }
+  assert.match(style, /color:var\(--text3\)/);
 });
 
 for (const period of ['__proto__', 'constructor', 'toString']) {

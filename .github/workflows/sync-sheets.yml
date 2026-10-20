@@ -3,7 +3,12 @@ name: Sync candidate sheets to Supabase
 on:
   schedule:
     - cron: "*/5 * * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force_full_sync:
+        description: "modifiedTimeを比較せず全候補者を強制的に再同期する"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -36,4 +41,6 @@ jobs:
           # GOOGLE_SERVICE_ACCOUNT_KEY_B64未設定の間はGOOGLE_SERVICE_ACCOUNT_KEYにフォールバックする
           GOOGLE_SERVICE_ACCOUNT_KEY_B64: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY_B64 }}
           GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+          # 手動実行で force_full_sync にチェックしたときだけ "true" になる（定期実行・GASからの起動では常に "false"）
+          FORCE_FULL_SYNC: ${{ github.event_name == 'workflow_dispatch' && inputs.force_full_sync }}
         run: npm run sync-sheets
