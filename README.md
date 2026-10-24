@@ -134,6 +134,24 @@ npx supabase functions list --project-ref hhlqgxmhbpfhjnjmradq   # verify_jwt: t
 
 `v3-sync-progress`（`supabase/functions/v3-sync-progress/index.ts`）は同期のたびに`v3_progress`を完全上書きしますが、同期前に既存の`item_name/required/status`と比較し、差分（項目の追加・削除・値の変化）があった候補者のみ`v3_candidates.last_updated_at`を現在時刻に更新します。差分が無い場合は`last_updated_at`を維持します。`list.html`の各候補者カードにこの`last_updated_at`を「最終更新: YYYY/MM/DD HH:mm」の形式で表示します。
 
+### 「実施要否」と進捗率
+
+シートのC列「実施要否」は、値（前後の空白を除く）が`不要`の項目だけを`v3_progress.required = false`として同期します。`必要`・空欄・その他の値はすべて`required = true`です（`scripts/sync-sheets.mjs`と`apps-script/candidate-realtime-sync.gs`の`collectItems`で同じ判定）。
+
+- `list.html`の進捗率は`required = true`の項目だけを分母・分子に数えます。必要項目が0件の候補者は「-」と表示し、バーは空にします。
+- `detail.html`は`required = false`の項目に、シート上の進捗（未実施など）の代わりにグレーの「不要」バッジを表示します。
+
+### 全候補者の強制再同期
+
+自動同期は`modifiedTime`の差分検知のため、同期ロジックだけを変えてもシートが編集されていない候補者は再同期されません（例: 「実施要否」の判定変更後、空欄の行が`required = false`のまま残る）。ロジック変更をデプロイしたあと、一度だけ次の手順で全候補者を再同期します。
+
+1. 変更が`main`に反映されていることを確認する
+2. GitHub の Actions →「Sync candidate sheets to Supabase」→「Run workflow」を開く
+3. `main`ブランチを選び、「modifiedTimeを比較せず全候補者を強制的に再同期する」にチェックを入れて実行する
+4. ログに「全件強制同期モード」と「成功: N件 / 失敗: 0件 / スキップ: 0件」（スキップ0件）が出ることを確認する。失敗があれば同じ手順でもう一度実行する
+
+CLIの場合は`gh workflow run sync-sheets.yml --ref main -f force_full_sync=true`でも同じです。定期実行やGASからの起動では入力が付かないため、常に通常の差分同期になります。値が変わった候補者は`last_updated_at`（一覧の「最終更新」）が実行時刻に更新されます。
+
 ### リアルタイム同期（プッシュ型）は不採用
 
 `apps-script/candidate-realtime-sync.gs` は、候補者シートのonEditから`v3-sync-progress`へ直接プッシュする方式として実装しましたが、コピーされた候補者シートに紐づくApps ScriptプロジェクトはデフォルトのGCPプロジェクトのままとなり、都道府県担当者が「① 同期を有効化」を実行する際に「Google で確認されていないアプリ」の警告が出てしまうことが判明しました。600件規模での運用には不向きと判断し、不採用としました（ファイルは経緯の記録として残しています）。代わりに、既存のプル型同期を「差分検知型」に強化する方針で対応します。

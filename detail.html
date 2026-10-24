@@ -26,6 +26,7 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
 .stage-todo{background:var(--todo);}
 .stage-doing{background:var(--doing);}
 .stage-done{background:var(--done);}
+.stage-unneeded{background:transparent;color:var(--text3);border:1px dashed var(--border);font-weight:600;}
 .empty,.loading{color:var(--text3);font-size:13px;padding:40px 0;text-align:center;}
 body.auth-pending > *{visibility:hidden;}
 </style>
@@ -98,12 +99,14 @@ async function render(){
     : periods.map(period => {
         const items = byPeriod[period];
         const itemsHtml = items.map(item => {
-          const stage = mapStatusStage(item.status);
-          const stageClass = STAGE_CLASS[stage] || 'stage-doing';
+          // 「不要」の項目は status（未実施など）を出さず、進捗とは別の「不要」表示にする
+          const stageBadge = item.required
+            ? `<div class="stage-badge ${STAGE_CLASS[mapStatusStage(item.status)] || 'stage-doing'}">${escapeHtml(item.status)}</div>`
+            : '<div class="stage-badge stage-unneeded">不要</div>';
           return `<div class="item-row">
             <div class="item-name">${escapeHtml(item.item_name)}</div>
             ${item.required ? '<div class="required-badge">必須</div>' : ''}
-            <div class="stage-badge ${stageClass}">${escapeHtml(item.status)}</div>
+            ${stageBadge}
           </div>`;
         }).join('');
         return `<div class="period-section">

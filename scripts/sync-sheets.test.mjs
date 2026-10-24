@@ -5,9 +5,23 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import vm from "node:vm";
 
 const scriptPath = process.env.SYNC_SCRIPT_UNDER_TEST || fileURLToPath(new URL("./sync-sheets.mjs", import.meta.url));
 const canary = "PRIVATE_CANARY_7cf568";
+// 「実施要否」列（C列）の値ごとの判定を確かめる行。Sheets APIもGASのgetValuesも空欄は "" で返す
+const requiredRows = [
+  ["", "【" + canary + "_period】", "", ""],
+  ["", canary + "_item_needed", "必要", canary + "_progress"],
+  ["", canary + "_item_unneeded", "不要", canary + "_progress"],
+  ["", canary + "_item_blank", "", canary + "_progress"],
+  ["", canary + "_item_spaced_unneeded", " 不要 ", canary + "_progress"],
+];
+// 「不要」だけが required=false、「必要」・空欄は required=true
+const expectedRequired = [
+  [canary + "_item_needed", true], [canary + "_item_unneeded", false],
+  [canary + "_item_blank", true], [canary + "_item_spaced_unneeded", false],
+];
 
 // 実際のエントリーポイントを別プロセスで実行する。Googleとfetchを置き換え、
 // 架空データだけを使って正常系・異常系の公開ログと終了コードを確認する。
@@ -15,6 +29,7 @@ const fixtureData = `
 export const canary = ${JSON.stringify(canary)};
 export const scenario = process.env.SYNC_LOG_TEST_SCENARIO;
 export const marker = (field) => canary + "_" + field;
+export const requiredRows = ${JSON.stringify(requiredRows)};
 export const count = scenario === "half-failed" ? 2 : scenario === "majority-failed" ? 3 : 1;
 export const candidates = Array.from({ length: count }, (_, i) => ({
   id: marker("id_" + i), candidate_code: marker("code_" + i), name: marker("name_" + i),
@@ -30,7 +45,7 @@ export function externalError() {
 `;
 
 const googleStub = `
-import { candidates, marker, scenario, externalError } from "../../fixture-data.mjs";
+import { candidates, marker, scenario, externalError, requiredRows } from "../../fixture-data.mjs";
 export const google = {
   auth: { JWT: class { constructor() { if (scenario === "credential-error") throw externalError(); } } },
   drive: () => ({ files: { get: async () => {
@@ -45,6 +60,7 @@ export const google = {
       scenario === "missing-code" ? "" : scenario === "mismatch" ? marker("wrong_code") : candidate.candidate_code,
     ]] } };
     if (range !== "広報物一覧・進捗確認ページ") throw new Error("Unexpected fixture range");
+    if (scenario === "required-values") return { data: { values: requiredRows } };
     return { data: { values: scenario === "no-items" ? [] : scenario === "reserved-periods" ?
       ["__proto__", "constructor", "toString"].flatMap((period) => [
         ["", "【" + period + "】", "", ""], ["", marker("item"), "必要", marker("progress")],
@@ -90,7 +106,7 @@ globalThis.fetch = async (url, options = {}) => {
 };
 `;
 
-function runScenario(scenario) {
+function runScenario(scenario, extraEnv = {}) {
   const directory = mkdtempSync(join(tmpdir(), "election-sync-log-test-"));
   try {
     const googleDirectory = join(directory, "node_modules", "googleapis");
@@ -108,7 +124,7 @@ function runScenario(scenario) {
       SUPABASE_KEY: canary + "_publishable", SUPABASE_SECRET_KEY: canary + "_secret", V3_SYNC_TOKEN: canary + "_token",
       GOOGLE_SERVICE_ACCOUNT_KEY: scenario === "invalid-credentials" ? canary + "_invalid_json" :
         JSON.stringify({ client_email: canary + "@example.invalid", private_key: canary + "_private_key" }),
-      SYNC_LOG_TEST_SCENARIO: scenario, SYNC_LOG_TEST_TRACE: tracePath,
+      SYNC_LOG_TEST_SCENARIO: scenario, SYNC_LOG_TEST_TRACE: tracePath, ...extraEnv,
     };
     if (scenario === "missing-env") delete env.V3_SYNC_TOKEN;
     const result = spawnSync(process.execPath, ["--import", pathToFileURL(join(directory, "preload.mjs")).href, join(directory, "sync-sheets.mjs")],
@@ -218,3 +234,41 @@ for (const [scenario, exitCode, success, failures] of [["half-failed", 0, 1, 1],
     assert.ok(result.output.includes(`成功: ${success}件 / 失敗: ${failures}件 / スキップ: 0件`));
   });
 }
+
+test("unchanged sheets are resynchronized when FORCE_FULL_SYNC is true", () => {
+  const result = runScenario("skip", { FORCE_FULL_SYNC: "true" });
+  assertPrivate(result);
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, /全件強制同期モード/);
+  assert.match(result.output, /成功: 1件 \/ 失敗: 0件 \/ スキップ: 0件/);
+  const write = result.requests.find((r) => r.path === "/functions/v1/v3-sync-progress");
+  assert.equal(write.body.modifiedTime, "2026-10-16T00:00:00Z");
+});
+
+for (const value of ["false", ""]) {
+  test(`FORCE_FULL_SYNC=${JSON.stringify(value)} keeps differential synchronization`, () => {
+    const result = runScenario("skip", { FORCE_FULL_SYNC: value });
+    assertPrivate(result);
+    assert.equal(result.status, 0, result.output);
+    assert.doesNotMatch(result.output, /全件強制同期モード/);
+    assert.match(result.output, /成功: 0件 \/ 失敗: 0件 \/ スキップ: 1件/);
+  });
+}
+
+test("only 不要 items are sent as required=false; 必要 and blank are required", () => {
+  const result = runScenario("required-values");
+  assertPrivate(result);
+  assert.equal(result.status, 0, result.output);
+  const write = result.requests.find((r) => r.path === "/functions/v1/v3-sync-progress");
+  assert.deepEqual(write.body.records[0].items.map((item) => [item.item_name, item.required]), expectedRequired);
+  assert(write.body.records[0].items.every((item) => item.status === canary + "_progress"));
+});
+
+test("the Apps Script collector applies the same required rule", () => {
+  const gasSource = readFileSync(new URL("../apps-script/candidate-realtime-sync.gs", import.meta.url), "utf8");
+  const context = vm.createContext({});
+  vm.runInContext(`${gasSource}\nthis.rtCollectItems_ = rtCollectItems_;`, context, { filename: "candidate-realtime-sync.gs" });
+  // vm内で作られた配列は別realmのため、JSONで通常の値に戻して比較する
+  const items = JSON.parse(JSON.stringify(context.rtCollectItems_(requiredRows)));
+  assert.deepEqual(items.map((item) => [item.item_name, item.required]), expectedRequired);
+});
