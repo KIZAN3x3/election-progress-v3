@@ -16,8 +16,9 @@ const row = (period, item_name = '合成項目', status = '未実施', required 
   ({ period, item_name, status, required });
 
 async function fixture({ candidates = [candidate], progress = [], search = `?id=${id}`,
-  candidateError = null, progressError = null } = {}) {
+  candidateError = null, progressError = null, list = [{ id }], listError = null } = {}) {
   const content = { innerHTML: '<div class="loading">読み込み中...</div>' };
+  const backLink = { href: 'list.html' };
   const queries = [];
   const logs = [];
   let accessChecks = 0;
@@ -29,6 +30,12 @@ async function fixture({ candidates = [candidate], progress = [], search = `?id=
         select(columns) { request.columns = columns; return builder; },
         eq(column, value) { request.filters.push([column, value]); return builder; },
         order(column, options) { request.order.push([column, options]); return builder; },
+        // 前後の候補者用の一覧取得（list.html と同じページング）
+        range(from, to) {
+          request.range = [from, to];
+          queries.push(request);
+          return Promise.resolve({ data: listError ? null : (from === 0 ? list : []), error: listError });
+        },
         then(resolve, reject) {
           queries.push(request);
           return Promise.resolve(table === 'v3_candidates'
@@ -42,7 +49,11 @@ async function fixture({ candidates = [candidate], progress = [], search = `?id=
   const context = vm.createContext({
     URLSearchParams,
     location: { search },
-    document: { getElementById(elementId) { assert.equal(elementId, 'content'); return content; } },
+    PREFECTURES: ['東京都', '愛知県'],
+    document: { getElementById(elementId) {
+      assert.ok(['content', 'backLink'].includes(elementId));
+      return elementId === 'content' ? content : backLink;
+    } },
     getSupabase: () => sdk,
     // Keep bootstrap closed so each test can await the actual render directly.
     requirePageAccess: async () => { accessChecks++; return null; },
@@ -51,7 +62,7 @@ async function fixture({ candidates = [candidate], progress = [], search = `?id=
   });
   const api = await vm.runInContext(`(async () => {\n${statusSource}\n${detailSource}\nreturn { render };\n})()`,
     context, { timeout: 1000, filename: 'actual-detail-renderer.js' });
-  return { content, queries, logs, api, accessChecks };
+  return { content, backLink, queries, logs, api, accessChecks };
 }
 
 const periodTitles = html => [...html.matchAll(/<div class="period-title">([^<]*)<\/div>/g)].map(match => match[1]);
@@ -142,8 +153,10 @@ test('normal reads retain the candidate filters and progress ordering', async ()
   assert.equal(f.accessChecks, 1);
   assert.equal(f.queries.length, 0);
   await f.api.render();
-  assert.equal(f.queries.length, 2);
-  const [candidatesQuery, progressQuery] = f.queries;
+  // 詳細の2件に加え、前後の候補者用の一覧取得（空のページが返るまでページング）
+  assert.equal(f.queries.filter(q => !q.range).length, 2);
+  assert.ok(f.queries.some(q => q.range));
+  const [candidatesQuery, progressQuery] = f.queries.filter(q => !q.range);
   assert.equal(candidatesQuery.table, 'v3_candidates');
   assert.equal(candidatesQuery.columns, 'id,name,election_name');
   assert.deepEqual(candidatesQuery.filters, [['id', id]]);
@@ -192,3 +205,85 @@ for (const failure of ['candidateError', 'progressError']) {
     assert.equal(f.logs.length, 1);
   });
 }
+
+// ---------- 一覧に戻る・前後の候補者 ----------
+
+const ids = ['10000000-0000-4000-8000-00000000000a', id, '10000000-0000-4000-8000-00000000000c'];
+const navLinks = html => [...html.matchAll(/<a class="nav-btn" href="([^"]*)">([^<]*)<\/a>/g)]
+  .map(match => [match[2], match[1].replaceAll('&amp;', '&')]);
+const disabledNav = html => [...html.matchAll(/<span class="nav-btn disabled" aria-disabled="true">([^<]*)<\/span>/g)]
+  .map(match => match[1]);
+const listQuery = f => f.queries.find(q => q.range);
+
+test('back link returns to the filtered list URL passed from the list', async () => {
+  const back = 'list.html?' + new URLSearchParams({ pref: '愛知県' });
+  const f = await fixture({ search: '?' + new URLSearchParams({ id, back }) });
+  assert.equal(f.backLink.href, back);
+});
+
+for (const back of ['https://example.com/list.html', '//example.com/list.html', 'javascript:alert(1)',
+  'admin.html', 'list.html#x', 'xlist.html', '']) {
+  test(`back value ${JSON.stringify(back)} falls back to list.html`, async () => {
+    const f = await fixture({ search: '?' + new URLSearchParams({ id, back }) });
+    assert.equal(f.backLink.href, 'list.html');
+  });
+}
+
+test('direct visit without back keeps list.html and navigates the unfiltered list', async () => {
+  const f = await fixture({ list: ids.map(id => ({ id })) });
+  await f.api.render();
+  assert.equal(f.backLink.href, 'list.html');
+  const q = listQuery(f);
+  assert.equal(q.table, 'v3_candidates');
+  assert.equal(q.columns, 'id');
+  assert.deepEqual(q.filters, []);
+  assert.deepEqual(q.order.map(o => [o[0], o[1].ascending]), [['name', true], ['id', true]]);
+  assert.deepEqual(navLinks(f.content.innerHTML), [
+    ['← 前の候補者', `detail.html?id=${ids[0]}`],
+    ['次の候補者 →', `detail.html?id=${ids[2]}`],
+  ]);
+  assert.match(f.content.innerHTML, /2 \/ 3/);
+});
+
+test('prev/next keep the list filter and pass the same back URL along', async () => {
+  const back = 'list.html?' + new URLSearchParams({ pref: '愛知県' });
+  const f = await fixture({ search: '?' + new URLSearchParams({ id, back }), list: ids.map(id => ({ id })) });
+  await f.api.render();
+  assert.deepEqual(listQuery(f).filters, [['prefecture', '愛知県']]);
+  const links = navLinks(f.content.innerHTML);
+  assert.equal(links.length, 2);
+  for (const [, href] of links) assert.equal(new URLSearchParams(href.split('?')[1]).get('back'), back);
+  assert.equal(new URLSearchParams(links[0][1].split('?')[1]).get('id'), ids[0]);
+  assert.equal(new URLSearchParams(links[1][1].split('?')[1]).get('id'), ids[2]);
+});
+
+test('an unknown prefecture in back is not used as a filter', async () => {
+  const back = 'list.html?' + new URLSearchParams({ pref: '架空県' });
+  const f = await fixture({ search: '?' + new URLSearchParams({ id, back }) });
+  await f.api.render();
+  assert.deepEqual(listQuery(f).filters, []);
+});
+
+test('first and last candidates disable the button at that end', async () => {
+  const first = await fixture({ list: [{ id }, { id: ids[2] }] });
+  await first.api.render();
+  assert.deepEqual(disabledNav(first.content.innerHTML), ['← 前の候補者']);
+  assert.deepEqual(navLinks(first.content.innerHTML).map(link => link[0]), ['次の候補者 →']);
+
+  const last = await fixture({ list: [{ id: ids[0] }, { id }] });
+  await last.api.render();
+  assert.deepEqual(disabledNav(last.content.innerHTML), ['次の候補者 →']);
+});
+
+test('candidate outside the list or a failed list read only disables navigation', async () => {
+  const outside = await fixture({ list: [{ id: ids[0] }, { id: ids[2] }], progress: [row('選挙期間')] });
+  await outside.api.render();
+  assert.deepEqual(disabledNav(outside.content.innerHTML), ['← 前の候補者', '次の候補者 →']);
+  assert.match(outside.content.innerHTML, /合成候補者/);
+
+  const failed = await fixture({ listError: { message: 'synthetic list failure' }, progress: [row('選挙期間')] });
+  await failed.api.render();
+  assert.deepEqual(disabledNav(failed.content.innerHTML), ['← 前の候補者', '次の候補者 →']);
+  assert.match(failed.content.innerHTML, /class="item-row"/);
+  assert.equal(failed.logs.length, 1);
+});

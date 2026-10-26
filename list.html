@@ -134,7 +134,51 @@ PREFECTURES.forEach(pref => {
   opt.textContent = pref;
   prefectureFilter.appendChild(opt);
 });
-prefectureFilter.addEventListener('change', () => renderList(prefectureFilter.value));
+// 絞り込み条件は URL（list.html?pref=…）に持たせ、詳細から戻っても同じ条件で開けるようにする。
+// 読み込み時は URL を読むだけにする（Googleログインから戻った直後の ?code= は auth.js が処理するため）
+const initialPrefecture = new URLSearchParams(location.search).get('pref') || '';
+if(PREFECTURES.includes(initialPrefecture)) prefectureFilter.value = initialPrefecture;
+
+function currentListUrl(){
+  const params = new URLSearchParams();
+  if(prefectureFilter.value) params.set('pref', prefectureFilter.value);
+  const query = params.toString();
+  return 'list.html' + (query ? '?' + query : '');
+}
+
+prefectureFilter.addEventListener('change', () => {
+  history.replaceState(history.state, '', currentListUrl());
+  renderList(prefectureFilter.value);
+});
+
+// 詳細から戻ったときのスクロール位置（ログイン用の sessionStorage のキーとは別）
+const LIST_SCROLL_KEY = 'v3:listScroll';
+// 編集・削除のあとの再描画ではスクロール位置を戻さない
+let scrollRestored = false;
+
+function openDetail(id){
+  const listUrl = currentListUrl();
+  try {
+    sessionStorage.setItem(LIST_SCROLL_KEY, JSON.stringify({ url: listUrl, y: window.scrollY }));
+  } catch {}
+  location.href = 'detail.html?' + new URLSearchParams({ id, back: listUrl });
+}
+
+// 描画が終わってから1回だけ呼ぶ。同じ条件の一覧のときだけ戻す
+function restoreScroll(){
+  let saved = null;
+  try {
+    saved = JSON.parse(sessionStorage.getItem(LIST_SCROLL_KEY) || 'null');
+    sessionStorage.removeItem(LIST_SCROLL_KEY);
+  } catch {}
+  if(saved && saved.url === currentListUrl() && Number.isFinite(saved.y)) window.scrollTo(0, saved.y);
+}
+
+// ブラウザの「戻る」でページがそのまま復元された場合は、保存した位置を使わないので消しておく
+window.addEventListener('pageshow', event => {
+  if(!event.persisted) return;
+  try { sessionStorage.removeItem(LIST_SCROLL_KEY); } catch {}
+});
 
 const editPrefectureSelect = document.getElementById('editPrefecture');
 PREFECTURES.forEach(pref => {
@@ -163,7 +207,7 @@ function renderList(prefecture){
     const stats = statsByCandidate[c.id] || { total: 0, done: 0 };
     // 必要項目が0件の候補者は進捗率を出さず「-」にする
     const rate = stats.total > 0 ? Math.round((stats.done / stats.total) * 100) : null;
-    return `<div class="candidate-card" onclick="location.href='detail.html?id=${c.id}'">
+    return `<div class="candidate-card" onclick="openDetail('${c.id}')">
       <div class="candidate-info">
         <div class="candidate-name">${escapeHtml(c.name)}</div>
         <div class="candidate-election">${escapeHtml(c.election_name || '')}</div>
@@ -222,6 +266,10 @@ async function render(){
   });
 
   renderList(prefectureFilter.value);
+  if(!scrollRestored){
+    scrollRestored = true;
+    restoreScroll();
+  }
 }
 
 function formatLastUpdated(isoString){
@@ -327,7 +375,7 @@ async function saveEdit(){
 }
 
 // HTML の onclick から呼ぶ関数（type="module" のスクリプトはグローバルにならないため）
-Object.assign(window, { openEditModal, closeEditModal, saveEdit, deleteCandidate });
+Object.assign(window, { openDetail, openEditModal, closeEditModal, saveEdit, deleteCandidate });
 
 const user = await requirePageAccess();
 if(user){

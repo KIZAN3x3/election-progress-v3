@@ -27,6 +27,11 @@ body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sa
 .stage-doing{background:var(--doing);}
 .stage-done{background:var(--done);}
 .stage-unneeded{background:transparent;color:var(--text3);border:1px dashed var(--border);font-weight:600;}
+.candidate-nav{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:20px;}
+.nav-btn{font-size:13px;font-weight:700;color:var(--text2);background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 14px;text-decoration:none;transition:all .15s;white-space:nowrap;}
+a.nav-btn:hover{border-color:var(--accent);color:var(--accent2);}
+.nav-btn.disabled{color:var(--text3);opacity:.5;cursor:not-allowed;}
+.nav-pos{font-size:12px;color:var(--text3);}
 .empty,.loading{color:var(--text3);font-size:13px;padding:40px 0;text-align:center;}
 body.auth-pending > *{visibility:hidden;}
 </style>
@@ -34,11 +39,12 @@ body.auth-pending > *{visibility:hidden;}
 <body class="auth-pending">
 <div class="app-header">
   <h1>🗳 選挙準備管理 v3</h1>
-  <a class="back-link" href="list.html">← 一覧に戻る</a>
+  <a class="back-link" id="backLink" href="list.html">← 一覧に戻る</a>
 </div>
 <div class="content" id="content"><div class="loading">読み込み中...</div></div>
 <script src="config.js?v=public-config-1"></script>
 <script src="status-map.js"></script>
+<script src="prefectures.js"></script>
 <script type="module">
 import { requirePageAccess, getSupabase } from './auth.js?v=public-config-1';
 
@@ -47,6 +53,56 @@ const PERIOD_ORDER = ['政治活動期間', '選挙期間'];
 
 function escapeHtml(str){
   return String(str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
+}
+
+// 一覧から来たときは ?back= に一覧のURL（絞り込み条件付き）が入っている。
+// よそのページへ飛ばないよう、list.html で始まるものだけを使い、それ以外は条件なしの一覧に戻る
+const BACK_PAGE_PATTERN = /^list\.html(\?[^#]*)?$/;
+const backParam = new URLSearchParams(location.search).get('back') || '';
+const backUrl = BACK_PAGE_PATTERN.test(backParam) ? backParam : 'list.html';
+document.getElementById('backLink').href = backUrl;
+
+// 前後の候補者は、一覧と同じ絞り込み・並び順（名前→id）で決める
+const backPrefecture = new URLSearchParams(backUrl.split('?')[1] || '').get('pref') || '';
+const listPrefecture = PREFECTURES.includes(backPrefecture) ? backPrefecture : '';
+
+// list.html と同じく、1回の取得の行数上限を超えても全件取れるよう PAGE_SIZE ずつ繰り返す
+const PAGE_SIZE = 1000;
+
+async function fetchAllRows(buildQuery){
+  const rows = [];
+  for(;;){
+    const { data, error } = await buildQuery().range(rows.length, rows.length + PAGE_SIZE - 1);
+    if(error) return { data: null, error };
+    if(!data || data.length === 0) return { data: rows, error: null };
+    rows.push(...data);
+  }
+}
+
+function detailUrl(id){
+  const params = new URLSearchParams({ id });
+  if(backUrl !== 'list.html') params.set('back', backUrl);
+  return 'detail.html?' + params;
+}
+
+function navButton(id, label){
+  return id
+    ? `<a class="nav-btn" href="${escapeHtml(detailUrl(id))}">${label}</a>`
+    : `<span class="nav-btn disabled" aria-disabled="true">${label}</span>`;
+}
+
+// 一覧の取得に失敗しても詳細は出す（前後のボタンを無効にするだけ）
+function navHtml(listResult, candidateId){
+  const ids = listResult.error ? [] : (listResult.data || []).map(c => c.id);
+  const index = ids.indexOf(candidateId);
+  if(listResult.error) console.error(listResult.error);
+  const prevId = index > 0 ? ids[index - 1] : null;
+  const nextId = index !== -1 && index < ids.length - 1 ? ids[index + 1] : null;
+  return `<div class="candidate-nav">
+    ${navButton(prevId, '← 前の候補者')}
+    <span class="nav-pos">${index === -1 ? '' : `${index + 1} / ${ids.length}`}</span>
+    ${navButton(nextId, '次の候補者 →')}
+  </div>`;
 }
 
 async function render(){
@@ -60,9 +116,13 @@ async function render(){
   }
 
   const supabase = getSupabase();
-  const [candidatesResult, progressResult] = await Promise.all([
+  const [candidatesResult, progressResult, listResult] = await Promise.all([
     supabase.from('v3_candidates').select('id,name,election_name').eq('id', candidateId),
-    supabase.from('v3_progress').select('item_name,period,required,status').eq('candidate_id', candidateId).order('sort_order', { ascending: true, nullsFirst: false })
+    supabase.from('v3_progress').select('item_name,period,required,status').eq('candidate_id', candidateId).order('sort_order', { ascending: true, nullsFirst: false }),
+    fetchAllRows(() => {
+      const query = supabase.from('v3_candidates').select('id').order('name', { ascending: true }).order('id', { ascending: true });
+      return listPrefecture ? query.eq('prefecture', listPrefecture) : query;
+    })
   ]);
 
   if(candidatesResult.error || progressResult.error){
@@ -116,6 +176,7 @@ async function render(){
       }).join('');
 
   el.innerHTML = `
+    ${navHtml(listResult, candidate.id)}
     <div class="candidate-head">
       <div class="name">${escapeHtml(candidate.name)}</div>
       <div class="election">${escapeHtml(candidate.election_name || '')}</div>
